@@ -60,6 +60,11 @@
 		resizeObserverCallback(entries);
 	});
 
+	// The menu is placed again when its content resizes while open, since a change within the slot doesn't fire `afterUpdate()`
+	const contentResizeObserver = new ResizeObserver(() => {
+		if (!measuringOngoingGuard) positionAndStyleFloatingMenu();
+	});
+
 	let dialogResizeObserver: ResizeObserver | undefined;
 	let wasOpen = open;
 	let measuringOngoing = false;
@@ -107,12 +112,18 @@
 				containerResizeObserver.disconnect();
 				containerResizeObserver.observe(floatingMenuContainer);
 			}
+			const floatingMenuContentDiv = floatingMenuContent?.div?.();
+			if (floatingMenuContentDiv) {
+				contentResizeObserver.disconnect();
+				contentResizeObserver.observe(floatingMenuContentDiv);
+			}
 		}
 
 		// Switching from open to closed
 		if (!isOpen && wasOpen) {
 			// Clean up observation of the now-closed floating menu
 			containerResizeObserver.disconnect();
+			contentResizeObserver.disconnect();
 
 			window.removeEventListener("pointermove", pointerMoveHandler);
 			window.removeEventListener("keydown", keyDownHandler);
@@ -160,11 +171,15 @@
 			});
 			dialogResizeObserver.observe(floatingMenuContentDiv);
 		}
+
+		// A menu created open never sees `open` change to start watching its content
+		if (open && floatingMenuContentDiv) contentResizeObserver.observe(floatingMenuContentDiv);
 	});
 
 	onDestroy(() => {
 		onFloatingMenuOpenChange(menuId, false, editor);
 		containerResizeObserver.disconnect();
+		contentResizeObserver.disconnect();
 		dialogResizeObserver?.disconnect();
 		window.removeEventListener("pointermove", pointerMoveHandler);
 		window.removeEventListener("keydown", keyDownHandler);
@@ -192,6 +207,12 @@
 
 		const floatingMenuContentDiv = floatingMenuContent?.div?.();
 		if (!self || !floatingMenuContainer || !floatingMenuContent || !floatingMenuContentDiv) return;
+
+		// A menu opening up or down is pinned to a window side only while it would cross that side, so it's measured unpinned, letting it go once it fits again
+		if (direction === "Top" || direction === "Bottom") {
+			floatingMenuContainer.style.setProperty("--content-left", "initial");
+			floatingMenuContainer.style.setProperty("--content-right", "initial");
+		}
 
 		const windowBounds = document.documentElement.getBoundingClientRect();
 		const floatingMenuBounds = self.getBoundingClientRect();
