@@ -54,11 +54,16 @@ pub extern "system" fn native_boot_jni<'local>(
         }
     };
 
-    // Un frame de verdad antes de devolver: demuestra que el grafo de nodos se
-    // ejecuta y produce una textura. Sin viewport todavía será 1x1 o nada, pero
-    // separa «el motor no arranca» de «el motor no tiene tamaño».
+    // Un frame antes de devolver: separa «el motor no arranca» de «el motor no
+    // tiene tamaño». A esta altura todavía NO hay tamaño —la ventana no ha
+    // avisado—, así que este frame solo evalúa el grafo y no toca la
+    // superficie. Los frames de verdad empiezan tras el primer
+    // `nativeSurfaceSize`.
     let primer = match engine.frame() {
-        Ok(con_lienzo) => format!("primer frame: lienzo={con_lienzo} — {}", engine.status()),
+        Ok(con_lienzo) => format!(
+            "primer frame (sin superficie aun): lienzo={con_lienzo} — {}",
+            engine.status()
+        ),
         Err(e) => format!("primer frame FALLO: {e}"),
     };
 

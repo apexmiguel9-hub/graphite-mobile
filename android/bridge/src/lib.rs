@@ -554,7 +554,34 @@ impl Engine {
 
         // ------------------------------------------------------------------
         // 3. Superficie.
+        //
+        // OJO, y esto es lo que reventaba al arrancar: `get_current_texture()`
+        // sobre una superficie SIN CONFIGURAR no devuelve una textura vacía,
+        // entra en panic dentro de wgpu:
+        //
+        //     Error in Surface::get_current_texture_view: Validation Error
+        //     Caused by: Surface is not configured for presentation
+        //
+        // Y la superficie no se configura hasta que la ventana avisa de su
+        // tamaño, que es un instante después de arrancar. Así que aquí todavía
+        // no se ha hecho nada: se evalúa el grafo (que no necesita superficie)
+        // y se sale. El primer frame de verdad es el primero que llega después
+        // de un `on_surface_size`.
+        //
+        // MEDIDO en el móvil: sin este guardia, la app moría en el arranque con
+        // ese panic y no llegaba ni a loguear el tamaño.
         // ------------------------------------------------------------------
+        if self.configured == (0, 0) {
+            self.frames += 1;
+            log::info!(
+                "[{}] frame {} sin superficie configurada: solo se evaluó el grafo (lienzo={})",
+                TAG,
+                self.frames,
+                self.last_texture.is_some()
+            );
+            return Ok(self.last_texture.is_some());
+        }
+
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) => t,
             wgpu::CurrentSurfaceTexture::Lost => return Err("superficie perdida".into()),
