@@ -3,11 +3,11 @@
 // Es un quad de pantalla completa generado con `vertex_index` (sin vertex
 // buffer). Dos triangulos que cubren el clip-space entero [-1, 1].
 //
-// Sobre el alfa: el motor compone con alfa PREMULTIPLICADA (Vello), y la
-// superficie del móvil es opaca. Por eso no hay blending en el pipeline y este
-// shader devuelve alfa 1 con el color tal cual. Sin blending, el fragmento
-// REEMPLAZA el destino, así que el valor de alfa no influence en nada que se
-// vea.
+// Sobre el alfa: la fuente viene con alfa PREMULTIPLICADA (así compone Vello) y
+// el destino es una superficie opaca. El fragmento no tiene blending: el pipeline
+// no lo activa porque no hay nada que mezclar *con* la superficie, solo hay que
+// resolver la transparencia de la fuente contra un color de fondo. Ver `fs_main`,
+// que es donde estuvo el bug.
 
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
@@ -42,6 +42,22 @@ fn vs_main(@builtin(vertex_index) i: u32) -> VsOut {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4f {
     let c = textureSample(src, samp, in.uv);
-    // Alfa 1: la superficie es opaca y no hay nada detrás que mostrar.
-    return vec4f(c.rgb, 1.0);
+    // Vello entrega alfa PREMULTIPLICADA: `c.rgb` ya viene multiplicado por
+    // `c.a`. En una zona transparente, `c.rgb` es 0 y `c.a` es 0.
+    //
+    // Por eso aquí NO se puede hacer `vec4f(c.rgb, 1.0)`: eso convierte
+    // "transparente" en "negro opaco", y el resultado es un triángulo negro
+    // justo donde el motor no dibujó nada. Ese fue el bug del puerto anterior,
+    // y su "arreglo" (forzar alfa 1) lo conservaba en vez de quitarlo.
+    //
+    // Lo correcto para una superficie opaca es componer la fuente
+    // premultiplicada SOBRE un fondo opaco, que es el operador `over` estándar:
+    //
+    //     resultado = src + dst * (1 - src.a)
+    //
+    // Con `dst` opaco (a = 1), la transparencia del motor revela el fondo del
+    // lienzo en vez de volverse negro.
+    let fondo = vec4f(0.02, 0.02, 0.02, 1.0);
+    let rgb = c.rgb + fondo.rgb * (1.0 - c.a);
+    return vec4f(rgb, 1.0);
 }

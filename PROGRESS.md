@@ -98,6 +98,31 @@ descartar ni confirmar mirando el shader.
   si algún día `surfaceChanged` deja de llegar, el log lo delata en vez de dejar
   una captura rara.
 
+**De dónde vino el bug: el spike.** El port anterior se apoyó en
+`wgpu-android-spike`, un repositorio de pruebas para ver si Vello y wgpu
+funcionaban en Android, y heredó su gestión de la superficie. El spike tiene,
+literalmente, el mismo defecto:
+
+```kotlin
+// wgpu-android-spike/packaging/.../MainActivity.kt:77
+override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, ht: Int) = Unit
+
+// spike/.../MainActivity.kt:127-129
+private fun startRender(surface: Surface, width: Int, height: Int) {
+    val w = if (width > 0) width else 1080   // número mágico
+    val h = if (height > 0) height else 2400 // número mágico
+}
+```
+
+`surfaceCreated` siempre entrega 0×0, así que el spike **siempre** caía al
+fallback. No se notó porque el móvil de prueba era de 1080×2400 y el número
+casaba por casualidad con el dispositivo. Ese es el modo de fallo completo: no
+era un descuido del spike, era un spike que parecía funcionar por suerte y
+enseñó el error al código que se apoyó en él.
+
+Aquí no hay números mágicos: el tamaño llega, se comprueba, y si es 0 se
+ignora en vez de inventarse uno.
+
 ### Cómo se comprueba en el móvil
 
 ```bash
@@ -107,11 +132,48 @@ adb logcat -s GRAPHITE | grep -E 'surfaceChanged|reconfig|DISCREPANCIA|viewport'
 - **Correcto:** aparece `surfaceChanged -> 1080x2400`, `superficie reconfigured
   (0, 0) -> 1080x2400`, `viewport 1080x2400 actualizado`, y **cero**
   `DISCREPANCIA`.
-- **Si sigue saliendo el triángulo:** aparecerán `DISCREPANCIA` y `resizes` > 0.
-  Eso significaría que el tamaño del swapchain no cuadra con el de la ventana, y
-  el culpable pasa a ser el compositor o el driver, no el código de aquí.
 
-Ese es el criterio. No "ya no sale en la foto", sino **el número en el log**.
+El **color** de lo que se vea y el contador `resizes` separan las hipótesis sin
+ambigüedad:
+
+| | `resizes = 0` | `resizes > 0` |
+|---|---|---|
+| **gris (39,39,39)** | Arreglado: era el alfa premultiplicado | Arreglado, y además el tamaño estaba mal |
+| **negro** | El tamaño estaba bien; el problema es otro (UV o viewport) | Problema doble: tamaño **y** shader |
+
+Ese es el criterio. No "ya no sale en la foto", sino **el número y el color en el
+log**.
+
+### Por qué el alfa era el bug (y por qué el arreglo anterior no lo arreglaba)
+
+Vello compone con alfa **premultiplicada**: donde el motor no dibujó, la textura
+trae `rgb = 0` **y** `a = 0`.
+
+- El shader original hacía `if (a <= 0.0001) { return vec4f(0.0); }` → escribía
+  negro en la superficie opaca.
+- El "arreglo" pasó a `return vec4f(c.rgb, 1.0)` → **sigue escribiendo negro
+  opaco**, porque `c.rgb` es 0 ahí. Solo le puso un alfa de 1 encima.
+
+Los dos pintan negro. El razonamiento que justificaba el segundo ("la superficie
+es opaca, alfa 1 y el color tal cual") está mal desde la raíz: se despreciba la
+transparencia de la fuente en vez de resolverla.
+
+Lo correcto es componer la fuente premultiplicada **sobre un fondo opaco**, que es
+el operador `over`:
+
+```wgsl
+let fondo = vec4f(0.02, 0.02, 0.02, 1.0);
+let rgb = c.rgb + fondo.rgb * (1.0 - c.a);
+return vec4f(rgb, 1.0);
+```
+
+Así la transparencia revela el gris del lienzo en vez de convertirse en negro.
+
+Nótese que el diagnóstico con MAGENTA no podía detectar este bug: el shader nunca
+dejó de escribir, así que el color de limpieza era irrelevante. Los tres fallos
+—anclaje del tamaño, `surfaceChanged` vacío y alfa premultiplicada— se
+presentaban a la vez y tapaban el uno al otro. Por eso dos hipótesis anteriores
+dieron falso.
 
 ---
 
