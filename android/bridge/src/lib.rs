@@ -260,7 +260,16 @@ impl Engine {
             // el device, y reconfigurar la superficie con ese trabajo en vuelo
             // es un error de validación. Y los errores de wgpu son FATALES por
             // defecto, así que la app muere.
-            self.context.device.poll(wgpu::PollType::Wait);
+            // En wgpu 29 `PollType::Wait` es una variante con campos, no una unidad:
+            // `PollType::Wait { submission_index, timeout }`. Para "esperar a
+            // que se vacie la cola" esta el constructor
+            // `PollType::wait_indefinitely()`, que es el que usa upstream en
+            // `node-graph/libraries/wgpu-executor/src/texture_conversion.rs`.
+            //
+            // `poll` devuelve Result; el error se ignora a proposito porque aqui
+            // no hay nada que hacer si falla —no estamos leyendo nada— y lo que
+            // importa es que la GPU quede quieta.
+            let _ = self.context.device.poll(wgpu::PollType::wait_indefinitely());
 
             self.surface.configure(
                 &self.context.device,
