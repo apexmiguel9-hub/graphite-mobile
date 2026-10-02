@@ -56,6 +56,10 @@ on:
       - '.branding'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      # El wrapper del escritorio es dependencia del `frontend/wrapper` (que se
+      # compila a wasm aqui). Un cambio suyo cambia el `.so`, asi que la UI
+      # tendria que recompilarse para no quedarse con un glue que no encaja.
+      - 'desktop/wrapper/**'
       - '.github/workflows/build-frontend.yml'
   workflow_dispatch:
 

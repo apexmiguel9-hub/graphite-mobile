@@ -36,6 +36,13 @@ on:
       - 'Cargo.lock'
       - 'android/scripts/**'
       - '.github/workflows/build-so.yml'
+      # ------------------------------------------------------------------
+      # `desktop/wrapper` entra en el grafo del puente: el .so lo linka. Sin
+      # esto, arreglar un `pub(crate)` en esa carpeta —que es justo lo que hay
+      # que hacer para poder usarla desde fuera— no dispara el build del motor
+      # y el error aparece en el APK de hace rato, que sí salió verde.
+      # ------------------------------------------------------------------
+      - 'desktop/wrapper/**'
   workflow_dispatch:
 
 env:
