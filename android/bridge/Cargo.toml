@@ -1,0 +1,54 @@
+[package]
+name = "graphite-android-bridge"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+# El nombre lleva `_android` porque es lo que espera el nombre de la librería
+# nativa; el paquete se llama distinto a propósito, para que `cargo build -p`
+# no lo confunda con un crate del workspace de upstream.
+name = "graphite_android"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# ------------------------------------------------------------------
+# EL MOTOR, por ruta. Esto es todo el port: no se copia código del motor,
+# se depende de él. Si algún día upstream cambia una de estas API, el sitio
+# que se rompe es este fichero, no el motor.
+# ------------------------------------------------------------------
+graphite-editor = { path = "../../editor" }
+graph-craft = { path = "../../node-graph/graph-craft" }
+wgpu-executor = { path = "../../node-graph/libraries/wgpu-executor" }
+wgpu-sync = { path = "../../libraries/wgpu-sync" }
+document-container = { path = "../../document/container" }
+document-graph-storage = { path = "../../document/graph-storage" }
+document-format = { path = "../../document/format" }
+graphene-application-io = { path = "../../node-graph/libraries/application-io" }
+graphene-std = { path = "../../node-graph/nodes/gstd" }
+interpreted-executor = { path = "../../node-graph/interpreted-executor" }
+dyn-any = { path = "../../libraries/dyn-any" }
+math-parser = { path = "../../libraries/math-parser" }
+
+# Versiones: las mismas que declara el workspace de upstream en
+# `[workspace.dependencies]`. Si upstream las mueve, este fichero es el que hay
+# que tocar, y se nota enseguida porque el motor y el puente dejarían de
+# compilar juntos.
+wgpu = "29.0"
+pollster = "0.4"
+ndk = { version = "0.8", features = ["rwh_06", "api-level-26"] }
+raw-window-handle = "0.6"
+jni = "0.21"
+log = "0.4"
+android_logger = "0.13"
+
+# Nota: aquí NO hay `[profile.release]`. Los perfiles solo tienen efecto en la raíz
+# del workspace, y el de la raíz (`lto = "thin"`, `debug = true`) es el que se
+# aplica. Poner un perfil aquí solo produciría un aviso de cargo. OJO: ese
+# `debug = true` es el motivo de que el .so sin strippear pese más de 1 GB; por
+# eso el paso de strip en CI no es opcional.
+#
+# Nota: la edición es 2021 y no la 2024 del workspace. El código de este crate se
+# escribió y compiló con 2021 y no gana nada con cambiarlo; mezclar ediciones
+# dentro de un workspace es legal.

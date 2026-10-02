@@ -1,0 +1,207 @@
+name: Graphite Android SO
+
+# ------------------------------------------------------------------
+# COMPILA SOLO EL .so — el motor.
+#
+# POR QUÉ ESTÁ SEPARADO DEL APK:
+#
+# MEDIDO (run 37030043655 en el repo anterior): este build tardaba 10:51
+# MINUTOS, y en ese run no había cambiado ni una línea de Rust. El `.so` era
+# byte a byte el del run anterior, que ya estaba cacheado.
+#
+# El `.so` solo depende de:
+#   editor/  node-graph/  document/  libraries/  proc-macros/
+#   Cargo.toml  Cargo.lock  android/bridge/
+#
+# La UI (Kotlin, y luego el frontend dentro del WebView) va en `build-apk.yml`.
+# Tocar un componente de UI no debe recompilar el motor. Ese es todo el punto de
+# separarlos.
+#
+# NOTA SOBRE EL CACHÉ: `swatinem/rust-cache` usa el `Cargo.lock` como clave, así
+# que un cambio en el motor lo invalida entero. Es lo correcto: el motor es casi
+# todo el grafo.
+# ------------------------------------------------------------------
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'editor/**'
+      - 'node-graph/**'
+      - 'document/**'
+      - 'libraries/**'
+      - 'proc-macros/**'
+      - 'android/bridge/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'android/scripts/**'
+      - '.github/workflows/build-so.yml'
+  workflow_dispatch:
+
+env:
+  ANDROID_API_LEVEL: 36
+  ANDROID_BUILD_TOOLS_VERSION: 36.0.0
+  ANDROID_NDK_VERSION: 28.2.13676358
+  ANDROID_HOME: ${{ github.workspace }}/android-sdk
+  ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+  ANDROID_NDK_HOME: ${{ github.workspace }}/android-sdk/ndk/28.2.13676358
+
+jobs:
+  build-so:
+    name: Compilar el motor para arm64-v8a
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: graphite-aarch64
+
+      - name: Cache Android SDK + NDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/android-sdk
+          key: android-sdk-${{ env.ANDROID_API_LEVEL }}-${{ env.ANDROID_BUILD_TOOLS_VERSION }}-${{ env.ANDROID_NDK_VERSION }}
+          restore-keys: |
+            android-sdk-${{ env.ANDROID_API_LEVEL }}-${{ env.ANDROID_BUILD_TOOLS_VERSION }}-
+
+      - name: Install Android SDK (pinned, SHA-256 verificado)
+        run: |
+          if [ -d "$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION" ] \
+            && [ -d "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS_VERSION" ] \
+            && [ -d "$ANDROID_HOME/platforms/android-$ANDROID_API_LEVEL" ]; then
+            echo "SDK ya presente (cache hit), skipping install"
+          else
+            rm -rf "$ANDROID_HOME"
+            bash android/scripts/install-pinned-android-sdk.sh "$ANDROID_HOME"
+          fi
+
+      - name: Configure NDK clang
+        run: |
+          SYSROOT="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          {
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_CC=clang --target=aarch64-linux-android26 --sysroot=$SYSROOT"
+            echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_CXX=clang++ --target=aarch64-linux-android26 --sysroot=$SYSROOT"
+            echo "CC_aarch64_linux_android=clang --target=aarch64-linux-android26 --sysroot=$SYSROOT"
+          } >> $GITHUB_ENV
+
+      - name: Install cargo-ndk
+        run: |
+          source "$HOME/.cargo/env"
+          cargo install cargo-ndk --locked
+
+      # ------------------------------------------------------------------
+      # ESTE ES EL PORT. `-p graphite-android-bridge` es lo que mantiene el
+      # repo limpio: solo se construye el grafo de ese paquete, así que CEF
+      # (que necesita descargarse y compilar Chromium) no se toca nunca, aunque
+      # `desktop/` siga en el repo.
+      #
+      # Si esto falla, el log dice qué dependencia y qué símbolo: el dato que
+      # hace falta, sin teoría.
+      # ------------------------------------------------------------------
+      - name: Build Graphite engine for arm64-v8a
+        run: |
+          source "$HOME/.cargo/env"
+          cargo ndk \
+            -t arm64-v8a \
+            -o android/app/src/main/jniLibs \
+            build --release -p graphite-android-bridge
+
+      # ------------------------------------------------------------------
+      # NO ES OPCIONAL. Este paso existe porque un build dio "success" y un APK
+      # de 4,11 MB con el motor DENTRO del todo.
+      #
+      # En Rust el enlazador tira las dependencias que el código no usa. Por eso
+      # declarar `graphite-editor` en el Cargo.toml no demuestra nada: hay que
+      # USARLO, y hay que comprobarlo. Un `.so` sin motor pesa ~5 MB; con motor,
+      # 58 MB. La diferencia es tan grande que un umbral de tamaño basta para
+      # distinguir los dos casos.
+      # ------------------------------------------------------------------
+      - name: Verify the engine is ACTUALLY linked in
+        run: |
+          set -euo pipefail
+          SO=android/app/src/main/jniLibs/arm64-v8a/libgraphite_android.so
+          test -f "$SO" || { echo "::error::no existe $SO"; exit 1; }
+
+          echo "=== símbolos JNI exportados ==="
+          # Los tres tienen que existir Y coincidir con los `external fun` de
+          # MainActivity.kt. Si Kotlin manglea un nombre, esto no lo detecta: lo
+          # detecta el móvil con un UnsatisfiedLinkError. Aquí al menos se
+          # comprueba que el lado de Rust está.
+          MAPEOS=0
+          for sym in nativeBoot nativeSurfaceSize nativeFrame; do
+            if grep -qa "Java_dev_graphite_mobile_MainActivityKt_$sym" "$SO"; then
+              echo "  OK       $sym"
+              MAPEOS=$((MAPEOS + 1))
+            else
+              echo "::error::falta el símbolo JNI $sym"
+            fi
+          done
+          test "$MAPEOS" -eq 3 || { echo "::error::faltan símbolos JNI"; exit 1; }
+
+          echo "=== ¿el motor está enlazado? ==="
+          FALTA=""
+          for sym in graphite_editor graphene_core graph_craft wgpu_executor \
+                    portfolio_message_handler node_graph_executor; do
+            n=$(strings "$SO" | grep -c "$sym" || true)
+            if [ "$n" -eq 0 ]; then FALTA="$FALTA $sym"; else echo "  OK       $sym ($n)"; fi
+          done
+          if [ -n "$FALTA" ]; then
+            echo "::error::el motor NO está enlazado. Faltan:$FALTA"
+            echo "::error::este .so es de tu puente, no de Graphite. No lo subas."
+            exit 1
+          fi
+
+          SZ=$(stat -c%s "$SO")
+          echo "  tamaño .so: $SZ bytes ($((SZ / 1048576)) MB sin strippear)"
+          # MEDIDO: el .so SIN motor mide 4,95 MB. Muy por debajo es sospechoso.
+          if [ "$SZ" -lt 30000000 ]; then
+            echo "::error::el .so mide $SZ bytes; el .so sin motor pesaba 4,95 MB"
+            exit 1
+          fi
+          echo "VEREDICTO: el motor de Graphite está dentro del .so"
+
+      # ------------------------------------------------------------------
+      # El perfil release de upstream lleva `debug = true` (ver Cargo.toml), y
+      # con `lto = "thin"` el `.so` sale de más de 1 GB sin strippear. Gradle lo
+      # reduce al final, pero entonces el `build-apk` espera 5 minutos haciéndolo.
+      # Strip aquí: el artefacto pesa lo que va a pesar el APK.
+      #
+      # `llvm-strip` NO está en el PATH del runner (medido: "command not found",
+      # exit 127): vive dentro del NDK, que es donde lo instala el script
+      # verificado por SHA-256. Por eso la ruta completa.
+      # ------------------------------------------------------------------
+      - name: Strip the .so
+        run: |
+          set -euo pipefail
+          SO=android/app/src/main/jniLibs/arm64-v8a/libgraphite_android.so
+          STRIP="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+          test -x "$STRIP" || { echo "::error::no existe $STRIP"; exit 1; }
+          ANTES=$(stat -c%s "$SO")
+          T0=$(date +%s)
+          "$STRIP" --strip-unneeded "$SO"
+          T1=$(date +%s)
+          DESPUES=$(stat -c%s "$SO")
+          echo "  sin strippear: $ANTES bytes ($(( ANTES / 1048576 )) MB)"
+          echo "  strippeado:    $DESPUES bytes ($(( DESPUES / 1048576 )) MB)"
+          echo "  el strip tardó $((T1 - T0)) s"
+          if [ "$DESPUES" -lt 30000000 ]; then
+            echo "::error::tras strip el .so mide $DESPUES: demasiado pequeño para el motor"
+            exit 1
+          fi
+
+      - name: Upload .so artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphite-mobile-so
+          path: android/app/src/main/jniLibs/arm64-v8a/libgraphite_android.so
+          retention-days: 30
+          if-no-files-found: error

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Tema de plataforma, sin AndroidX ni Material de Google.
+
+  `windowLayoutInDisplayCutoutMode=shortEdges` es lo que hace que la superficie
+  llegue a cubrir la zona de la cámara Selfie/principal en vez de empezar por
+  debajo. Importa más de lo que parece: la altura del lienzo cambia, y el
+  puente la reconfigura, y es justamente ese camino el que antes estaba roto.
+
+  Va en el tema y no como `meta-data` en el manifest: `windowLayoutInDisplayCutoutMode`
+  es un atributo de ventana, y en el manifest no produce el efecto (ni error).
+-->
+<resources>
+    <style name="Theme.Graphite" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:windowBackground">@android:color/black</item>
+    </style>
+</resources>

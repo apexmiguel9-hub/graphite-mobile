@@ -62,9 +62,9 @@ dependencies = [
  "jni-sys",
  "libc",
  "log",
- "ndk",
+ "ndk 0.9.0",
  "ndk-context",
- "ndk-sys",
+ "ndk-sys 0.6.0+11769913",
  "num_enum",
  "thiserror 1.0.69",
 ]
@@ -80,6 +80,24 @@ name = "android-tzdata"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e999941b234f3131b00bc13c22d06e8c5ff726d1b6318ac7eb276997bbb4fef0"
+
+[[package]]
+name = "android_log-sys"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "84521a3cf562bc62942e294181d9eef17eb38ceb8c68677bc49f144e4c3d4f8d"
+
+[[package]]
+name = "android_logger"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c494134f746c14dc653a35a4ea5aca24ac368529da5370ecf41fe0341c35772f"
+dependencies = [
+ "android_log-sys",
+ "env_logger 0.10.2",
+ "log",
+ "once_cell",
+]
 
 [[package]]
 name = "android_system_properties"
@@ -1457,6 +1475,16 @@ dependencies = [
 
 [[package]]
 name = "env_logger"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cd405aab171cb85d6735e5c8d9db038c17d3ca007a4d2c25f337935c3d90580"
+dependencies = [
+ "log",
+ "regex",
+]
+
+[[package]]
+name = "env_logger"
 version = "0.11.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c863f0904021b108aa8b2f55046443e6b1ebde8fd4a15c399893aae4fa069f"
@@ -2242,6 +2270,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "graphite-android-bridge"
+version = "0.1.0"
+dependencies = [
+ "android_logger",
+ "document-container",
+ "document-format",
+ "document-graph-storage",
+ "dyn-any",
+ "graph-craft",
+ "graphene-application-io",
+ "graphene-std",
+ "graphite-editor",
+ "interpreted-executor",
+ "jni",
+ "log",
+ "math-parser",
+ "ndk 0.8.0",
+ "pollster",
+ "raw-window-handle",
+ "wgpu",
+ "wgpu-executor",
+ "wgpu-sync",
+]
+
+[[package]]
 name = "graphite-desktop"
 version = "0.0.0"
 dependencies = [
@@ -2377,7 +2430,7 @@ dependencies = [
  "document-format",
  "document-graph-storage",
  "dyn-any",
- "env_logger",
+ "env_logger 0.11.8",
  "futures",
  "glam 0.33.10",
  "graph-craft",
@@ -3586,6 +3639,21 @@ dependencies = [
 
 [[package]]
 name = "ndk"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2076a31b7010b17a38c01907c45b945e8f11495ee4dd588309718901b1f7a5b7"
+dependencies = [
+ "bitflags 2.13.2",
+ "jni-sys",
+ "log",
+ "ndk-sys 0.5.0+25.2.9519653",
+ "num_enum",
+ "raw-window-handle",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "ndk"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3f42e7bbe13d351b6bead8286a43aac9534b82bd3cc43e47037f012ebfd62d4"
@@ -3593,7 +3661,7 @@ dependencies = [
  "bitflags 2.13.2",
  "jni-sys",
  "log",
- "ndk-sys",
+ "ndk-sys 0.6.0+11769913",
  "num_enum",
  "raw-window-handle",
  "thiserror 1.0.69",
@@ -3604,6 +3672,15 @@ name = "ndk-context"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27b02d87554356db9e9a873add8782d4ea6e3e58ea071a9adb9a2e8ddb884a8b"
+
+[[package]]
+name = "ndk-sys"
+version = "0.5.0+25.2.9519653"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c196769dd60fd4f363e11d948139556a344e79d451aeb2fa2fd040738ef7691"
+dependencies = [
+ "jni-sys",
+]
 
 [[package]]
 name = "ndk-sys"
@@ -4644,7 +4721,7 @@ name = "raster-nodes-shaders"
 version = "0.0.0"
 dependencies = [
  "cargo-gpu-install",
- "env_logger",
+ "env_logger 0.11.8",
  "log",
 ]
 
@@ -7065,7 +7142,7 @@ dependencies = [
  "libloading 0.8.8",
  "log",
  "naga",
- "ndk-sys",
+ "ndk-sys 0.6.0+11769913",
  "objc2",
  "objc2-core-foundation",
  "objc2-foundation",
@@ -7637,7 +7714,7 @@ dependencies = [
  "android-activity",
  "bitflags 2.13.2",
  "dpi 0.1.2 (git+https://github.com/timon-schelling/winit?branch=graphite)",
- "ndk",
+ "ndk 0.9.0",
  "raw-window-handle",
  "smol_str",
  "tracing",

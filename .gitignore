@@ -14,3 +14,28 @@ flamegraph.svg
 .DS_Store
 .nvim.lua
 /.devcontainer/devcontainer-lock.json
+
+# ------------------------------------------------------------------
+# ANDROID (port a móvil)
+#
+# OJO: estas líneas se AÑADEN a las de arriba, no las sustituyen. El intento
+# anterior reemplazó este fichero entero yLostió `branding/`, que es el tarball
+# de iconos que Graphite descarga de una URL externa (`about.toml`). Perder ese
+# `branding/` significa acabar commiteando unos 200 SVG sin querer, además de los
+# artefactos de build que upstream ya tenía bien filtrados.
+# ------------------------------------------------------------------
+
+# .so compilado. Pesa 58 MB después de strip y 1,2 GB antes: nunca al repo.
+android/app/src/main/jniLibs/
+
+# Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+
+# El SDK se descarga en CI dentro del workspace.
+android-sdk/
+
+# Copias de seguridad de edição manual
+**/*.rs.bk

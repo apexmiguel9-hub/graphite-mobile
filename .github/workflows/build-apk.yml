@@ -1,0 +1,214 @@
+name: Graphite Mobile APK
+
+# ------------------------------------------------------------------
+# CONSTRUYE EL APK — la capa Kotlin y el `.so` del motor ya compilado.
+#
+# MEDIDO (repo anterior): el workflow unido tardaba 10:51 minutos, de los cuales
+# ~10 eran recompilar un `.so` que no había cambiado ni una línea. Un APK de
+# Kotlin mínimo tarda ~1 minuto.
+#
+# Este workflow baja el `.so` del último `build-so` exitoso y solo compila Kotlin.
+# ES EL QUE SE USA CADA VEZ QUE SE TOCA LA UI.
+#
+# Los dos inputs existen para poder iterar sobre la UI sin pagar los 10 minutos
+# del motor: `so_run_id` + `pin_so` permiten repetir el mismo `.so`.
+# ------------------------------------------------------------------
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'android/app/**'
+      - 'android/build.gradle.kts'
+      - 'android/settings.gradle.kts'
+      - 'android/gradle.properties'
+      - 'android/gradle/**'
+      - 'android/gradlew'
+      - 'android/gradlew.bat'
+      - 'android/scripts/**'
+      - '.github/workflows/build-apk.yml'
+  # Cuando el motor se recompila, el APK se reconstruye con el `.so` nuevo.
+  workflow_run:
+    workflows: ["Graphite Android SO"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      so_run_id:
+        description: 'Run de build-so del que tirar el .so (vacio = el ultimo exitoso)'
+        required: false
+        default: ''
+      pin_so:
+        description: 'Usar ese .so viejo a proposito (para iterar en la UI sin tocar el motor)'
+        type: boolean
+        required: false
+        default: false
+
+env:
+  ANDROID_API_LEVEL: 36
+  ANDROID_BUILD_TOOLS_VERSION: 36.0.0
+  ANDROID_NDK_VERSION: 28.2.13676358
+  ANDROID_HOME: ${{ github.workspace }}/android-sdk
+  ANDROID_SDK_ROOT: ${{ github.workspace }}/android-sdk
+
+jobs:
+  build-apk:
+    name: APK Kotlin + .so del motor
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-apk-${{ hashFiles('android/**/*.gradle.kts', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-apk-
+
+      # ------------------------------------------------------------------
+      # OJO con la clave de caché: tiene que ser LA MISMA que en `build-so.yml`.
+      # MEDIDO: la primera versión de este workflow usó una clave nueva
+      # (`android-sdk-gradle-`) y se comió un fallo real:
+      #   > SDK location not found. Define a valid SDK location with an
+      #     ANDROID_HOME environment variable
+      # porque la caché nunca se había llenado y no había paso de instalación de
+      # reserva. Un workflow más rápido que no arranca es peor que uno lento.
+      # ------------------------------------------------------------------
+      - name: Cache Android SDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/android-sdk
+          key: android-sdk-${{ env.ANDROID_API_LEVEL }}-${{ env.ANDROID_BUILD_TOOLS_VERSION }}-${{ env.ANDROID_NDK_VERSION }}
+          restore-keys: |
+            android-sdk-${{ env.ANDROID_API_LEVEL }}-${{ env.ANDROID_BUILD_TOOLS_VERSION }}-
+
+      # El nombre va entre comillas y sin ':' — sin comillas, YAML lo lee como un
+      # mapa y el workflow entero deja de ser válido. (Falló de verdad.)
+      - name: "Install Android SDK (solo si falla la cache, pinned, SHA-256 verificado)"
+        run: |
+          if [ -d "$ANDROID_HOME/platforms/android-$ANDROID_API_LEVEL" ] \
+            && [ -d "$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS_VERSION" ]; then
+            echo "SDK ya presente (cache hit)"
+          else
+            rm -rf "$ANDROID_HOME"
+            bash android/scripts/install-pinned-android-sdk.sh "$ANDROID_HOME"
+          fi
+
+      # ------------------------------------------------------------------
+      # BAJAR EL `.so`. Esto es lo que sustituye a los 10 minutos.
+      #
+      # `GH_TOKEN` NO ES OPCIONAL: sin él, `gh api` falla por autenticación, el
+      # `|| true` se lo come, `RUN_ID` queda vacío y este paso miente diciendo que
+      # no hay ningún `build-so` exitoso — aunque acabe de terminar uno bien. Aquí
+      # el error se MUESTRA en vez de esconderse.
+      # ------------------------------------------------------------------
+      - name: Resolve .so run
+        id: so
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+
+          if [ "${{ inputs.pin_so }}" = "true" ] && [ -n "${{ inputs.so_run_id }}" ]; then
+            RUN_ID="${{ inputs.so_run_id }}"
+            echo "Fijado a mano: $RUN_ID"
+          else
+            RUN_ID=""
+            PAGE=1
+            while [ -z "$RUN_ID" ]; do
+              JSON=$(gh api "repos/$REPO/actions/workflows/build-so.yml/runs?per_page=100&page=$PAGE")
+              IDS=$(echo "$JSON" \
+                | jq -r '.workflow_runs[] | select(.conclusion=="success" and .head_branch=="master") | .id')
+              RUN_ID=$(echo "$IDS" | head -1)
+              [ -z "$RUN_ID" ] && PAGE=$((PAGE + 1))
+              if [ "$PAGE" -gt 10 ]; then break; fi
+            done
+          fi
+
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::no hay ningun build-so exitoso en master."
+            echo "::error::Ultimos runs de build-so, con su conclusion:"
+            gh api "repos/$REPO/actions/workflows/build-so.yml/runs?per_page=10" \
+              --jq '.workflow_runs[] | "  \(.id)  \(.conclusion)  \(.head_branch)  \(.created_at)"' || true
+            exit 1
+          fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+          echo "Usando el .so del run $RUN_ID"
+
+      - name: Download .so
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.so.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p android/app/src/main/jniLibs/arm64-v8a
+          gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" \
+            -n graphite-mobile-so \
+            -D android/app/src/main/jniLibs/arm64-v8a
+          SO=android/app/src/main/jniLibs/arm64-v8a/libgraphite_android.so
+          test -f "$SO" || { echo "::error::no se ha descargado el .so"; exit 1; }
+          SZ=$(stat -c%s "$SO")
+          echo "  .so: $SZ bytes"
+          # MEDIDO: el .so SIN motor mide 4,95 MB; con motor, 58 MB. Si bajamos
+          # de 30 MB es que se descargó el equivocado.
+          if [ "$SZ" -lt 30000000 ]; then
+            echo "::error::el .so pesa $SZ bytes: parece el .so SIN motor. No compiles el APK."
+            exit 1
+          fi
+          for sym in graphite_editor graphene_core graph_craft; do
+            strings "$SO" | grep -q "$sym" || { echo "::error::falta el simbolo $sym"; exit 1; }
+          done
+          echo "  motor verificado dentro"
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug
+
+      # El `.so` tiene que estar DENTRO del APK. Un `assembleDebug` que se pasa
+      # sin el `.so` compila igual de bien y deja una app que muere al arrancar.
+      - name: Verify APK contents
+        run: |
+          set -euo pipefail
+          APK=$(ls android/app/build/outputs/apk/debug/*.apk | head -1)
+          echo "  APK: $APK ($(stat -c%s "$APK") bytes)"
+          rm -rf /tmp/apkcheck && mkdir -p /tmp/apkcheck && unzip -qo "$APK" -d /tmp/apkcheck
+          SO=/tmp/apkcheck/lib/arm64-v8a/libgraphite_android.so
+          test -f "$SO" || { echo "::error::el APK NO lleva el .so dentro"; exit 1; }
+          echo "  .so en el APK: $(stat -c%s "$SO") bytes"
+
+          # Y el símbolo JNI tiene que estar, con el nombre EXACTO que espera
+          # Kotlin. Si el paquete de Kotlin y el prefijo del `#[export_name]` en
+          # Rust no coinciden, esto falla aquí en vez de en el móvil.
+          for sym in Java_dev_graphite_mobile_MainActivityKt_nativeBoot \
+                     Java_dev_graphite_mobile_MainActivityKt_nativeSurfaceSize \
+                     Java_dev_graphite_mobile_MainActivityKt_nativeFrame; do
+            grep -qa "$sym" "$SO" || { echo "::error::el APK lleva un .so sin $sym"; exit 1; }
+            echo "  OK  $sym"
+          done
+
+          # La Activity también: sin ella el APK arranca y sale a la pantalla de
+          # inicio sin explicación.
+          unzip -l "$APK" | grep -q 'MainActivity' \
+            || { echo "::error::el APK no lleva MainActivity"; exit 1; }
+          echo "VEREDICTO: el APK lleva el motor y la Activity"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphite-mobile-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 30

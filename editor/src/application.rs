@@ -82,6 +82,14 @@ pub struct Environment {
 pub enum Platform {
 	Desktop,
 	Web,
+	/// Aplicación móvil: pantalla táctil, sin ventana de escritorio.
+	///
+	/// Antes de esta variante, un motor en Android se declaraba como
+	/// `Desktop` + `Host::Linux`, lo cual solo mentía: no hay ventana, no hay
+	/// atajos de teclado de escritorio y la app es una superficie táctil a
+	/// pantalla completa. Con la variante propia, `is_android()` deja de ser una
+	/// suposición.
+	Android,
 }
 #[derive(Clone, Copy, Debug)]
 pub enum Host {
@@ -95,6 +103,9 @@ impl Environment {
 	}
 	pub fn is_web(&self) -> bool {
 		matches!(self.platform, Platform::Web)
+	}
+	pub fn is_android(&self) -> bool {
+		matches!(self.platform, Platform::Android)
 	}
 	pub fn is_windows(&self) -> bool {
 		matches!(self.host, Host::Windows)

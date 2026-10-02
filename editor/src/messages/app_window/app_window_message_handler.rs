@@ -84,6 +84,11 @@ pub enum AppWindowPlatform {
 	Windows,
 	Mac,
 	Linux,
+	/// Superficie táctil a pantalla completa, con el lienzo sobre un
+	/// `ANativeWindow`. No hay ventana de escritorio, pero el motor sigue
+	/// necesitando un valor aquí porque este `From` se dispara en
+	/// `PortfolioMessage::Init`, que es el primer mensaje que recibe el editor.
+	Android,
 }
 
 impl From<&Environment> for AppWindowPlatform {
@@ -93,6 +98,7 @@ impl From<&Environment> for AppWindowPlatform {
 			(Platform::Desktop, Host::Linux) => AppWindowPlatform::Linux,
 			(Platform::Desktop, Host::Mac) => AppWindowPlatform::Mac,
 			(Platform::Desktop, Host::Windows) => AppWindowPlatform::Windows,
+			(Platform::Android, _) => AppWindowPlatform::Android,
 		}
 	}
 }

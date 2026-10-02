@@ -1,5 +1,15 @@
 [workspace]
 members = [
+	# ANDROID: el puente JNI del port a móvil. Se añade como miembro, pero NO se
+	# toca nada más de este fichero a propósito.
+	#
+	# Por qué no se borran `desktop/`, `frontend/` ni `tools/` como haría falta
+	# para un port "limpio": porque no hace falta. `cargo build -p
+	# graphite-android-bridge` solo construye el grafo de dependencias de ese
+	# paquete, así que CEF (que necesita descargarse y compilar Chromium) nunca
+	# se construye. Y mientras este repo no borre ficheros de upstream, cada
+	# `git merge upstream/master` es trivial.
+	"android/bridge",
 	"desktop",
 	"desktop/wrapper",
 	"desktop/ui",
