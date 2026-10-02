@@ -177,7 +177,12 @@ jobs:
           fi
           echo "  SHA-256 de binaryen correcto"
           tar -xzf /tmp/binaryen.tar.gz -C /tmp
+          # OJO: `$GITHUB_PATH` solo aplica a los pasos SIGUIENTES. Por eso se
+          # exporta tambien en este paso —si no, el `wasm-opt --version` de aquí
+          # falla con "command not found" aunque el binario este puesto, y parece
+          # que falte la herramienta cuando lo que falta es el PATH.
           echo "/tmp/binaryen-version_${BE}/bin" >> "$GITHUB_PATH"
+          export PATH="/tmp/binaryen-version_${BE}/bin:$PATH"
           wasm-opt --version
 
       # ------------------------------------------------------------------
