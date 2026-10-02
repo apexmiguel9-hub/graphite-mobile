@@ -278,28 +278,49 @@ jobs:
 
           test -f "$DIST/index.html" || { echo "::error::falta index.html"; exit 1; }
 
-          # El glue del wasm tiene que estar DENTRO del dist. En modo native
-          # vite lo copia desde wrapper/pkg-native/.
-          test -d "$DIST/wrapper/pkg-native" \
-            || { echo "::error::falta wrapper/pkg-native en el dist"; exit 1; }
-          ls -la "$DIST/wrapper/pkg-native"
+          # El glue del wasm lo BUNDLEA vite, no lo copia.
+          #
+          # `wasm-loader.ts` hace `import init from "/wrapper/pkg/graphite_wasm_wrapper"`,
+          # y en modo native el alias de vite manda ese `/wrapper/pkg/` a
+          # `/wrapper/pkg-native/`. Vite resuelve el import, mete el glue en el
+          # bundle y emite el `.wasm` como asset CON HASH en `dist/assets/`.
+          #
+          # MEDIDO: `dist/wrapper/pkg-native` NO existe. Buscarlo ahi da "falta
+          # wrapper/pkg-native" aunque el build sea correcto —que es lo que
+          # paso, y manda a "arreglar" un build que ya estaba bien.
+          FW_FILE=$(find "$DIST" -name 'graphite_wasm_wrapper_bg*.wasm' | head -1)
+          if [ -z "$FW_FILE" ]; then
+            echo "::error::no hay ningun graphite_wasm_wrapper_bg*.wasm en el dist"
+            echo "::error::contenido de dist/assets:"
+            ls -la "$DIST/assets" || true
+            exit 1
+          fi
+          echo "  wasm del frontend: $FW_FILE"
 
-          # Y el motor NO debe estar dentro: si esta, es que se compiló en
-          # modo web y no nativo, que es el error caro (el motor dos veces,
-          # uno en wasm y otro en el .so, y el del wasm sin GPUnative).
-          echo "=== el wasm del frontend pesa: ==="
-          FW=$(stat -c%s "$DIST"/wrapper/pkg-native/*_bg.wasm)
+          # ------------------------------------------------------------------
+          # QUE EL MOTOR NO ESTE DENTRO. Si esta, es que se compiló en modo web
+          # y no nativo: el motor dos veces, uno en wasm y otro en el .so, y el
+          # del wasm sin GPU nativa. Es el error caro de este paso.
+          # ------------------------------------------------------------------
+          FW=$(stat -c%s "$FW_FILE")
           echo "  $FW bytes ($((FW / 1024)) KB)"
           if [ "$FW" -gt 2000000 ]; then
-            echo "::error::el wasm del dist mide $FW: el motor se ha compilado dentro"
+            echo "::error::el wasm del dist mide $FW bytes."
+            echo "::error::Eso significa que el motor se compiló DENTRO del wasm"
+            echo "::error::(modo web). En modo native son ~271 KB. El motor ya esta"
+            echo "::error::en el .so nativo: duplicarlo solo wastes APK y GPU."
             exit 1
           fi
           echo "  (el motor NO esta dentro: solo la capa de mensajes)"
 
+          # Los iconos vienen INLINEADOS en el bundle por el alias `?raw` de
+          # vite.config.ts, no como ficheros .svg sueltos en el dist. Por eso
+          # aquí solo se comprueba que hay alguno (los favicons) y no se espera
+          # ninguno en concreto.
           SVG=$(find "$DIST" -name '*.svg' | wc -l)
-          echo "  SVG en el dist: $SVG"
-          test "$SVG" -gt 100 \
-            || { echo "::error::solo $SVG SVG: faltan los assets de marca"; exit 1; }
+          echo "  SVG sueltos en el dist: $SVG (favicons; los iconos van inline)"
+          test "$SVG" -gt 0 \
+            || { echo "::error::cero SVG: faltan los assets de marca"; exit 1; }
 
           echo "VEREDICTO: el frontend esta compilado en modo nativo"
 
