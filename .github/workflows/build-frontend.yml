@@ -219,17 +219,42 @@ jobs:
           wasm-opt -O3 -g "$PKG/${WASM_PKG_NAME}_bg.wasm" -o "$PKG/${WASM_PKG_NAME}_bg.wasm"
           echo "  pkg-native:"
           ls -la "$PKG"
-          # El glue tiene que exponer las tres funciones de la frontera. Si el
-          # build pierde la feature `native`, esto avisa en vez de fallar luego
-          # en el movil con un error de JS.
-          for f in sendNativeMessage receiveNativeMessage initializeNativeCommunication; do
-            if grep -q "$f" "$PKG/${WASM_PKG_NAME}.js"; then
-              echo "  OK  el glue menciona $f"
-            else
-              echo "::error::el glue no menciona $f: el build no va en modo native"
-              exit 1
-            fi
-          done
+
+          # ------------------------------------------------------------------
+          # COMPROBAR QUE VA EN MODO NATIVO. La señal de verdad es el TAMAÑO.
+          #
+          # MEDIDO: en modo `native` el `.wasm` son 271 KB tras `wasm-opt`. En
+          # modo web, con el motor dentro, serían decenas de MB. Es la misma
+          # lógica del `.so` del motor: un umbral de tamaño distingue los dos
+          # casos mejor que buscar un símbolo.
+          # ------------------------------------------------------------------
+          W=$(stat -c%s "$PKG/${WASM_PKG_NAME}_bg.wasm")
+          echo "  wasm del frontend: $W bytes ($((W / 1024)) KB)"
+          if [ "$W" -gt 2000000 ]; then
+            echo "::error::el wasm del frontend mide $W bytes."
+            echo "::error::Eso significa que el motor se compilo DENTRO del wasm"
+            echo "::error::(modo web). En modo native son ~271 KB. El motor ya esta"
+            echo "::error::en el .so nativo: duplicarlo solo wastes APK y GPU."
+            exit 1
+          fi
+
+          # `receiveNativeMessage` es el unico de los tres que el wasm EXPORTA
+          # (`#[wasm_bindgen(js_name = ...)]`). Los otros dos no se buscan aqui:
+          #
+          #   sendNativeMessage             -> lo busca el wasm en `window` con
+          #                                    `Reflect::get`, en runtime. No
+          #                                    aparece como export.
+          #   initializeNativeCommunication -> ni se exporta: lo llama el propio
+          #                                    wrapper al arrancar.
+          #
+          # Comprobar los tres en el glue daria falso negativo, que es como este
+          # paso fallo la primera vez.
+          if grep -q 'receiveNativeMessage' "$PKG/${WASM_PKG_NAME}.js"; then
+            echo "  OK  el glue exporta receiveNativeMessage"
+          else
+            echo "::error::el glue no exporta receiveNativeMessage"
+            exit 1
+          fi
 
       - name: Build the frontend with vite (--mode native)
         run: |
@@ -263,7 +288,13 @@ jobs:
           # modo web y no nativo, que es el error caro (el motor dos veces,
           # uno en wasm y otro en el .so, y el del wasm sin GPUnative).
           echo "=== el wasm del frontend pesa: ==="
-          stat -c%s "$DIST"/wrapper/pkg-native/*_bg.wasm
+          FW=$(stat -c%s "$DIST"/wrapper/pkg-native/*_bg.wasm)
+          echo "  $FW bytes ($((FW / 1024)) KB)"
+          if [ "$FW" -gt 2000000 ]; then
+            echo "::error::el wasm del dist mide $FW: el motor se ha compilado dentro"
+            exit 1
+          fi
+          echo "  (el motor NO esta dentro: solo la capa de mensajes)"
 
           SVG=$(find "$DIST" -name '*.svg' | wc -l)
           echo "  SVG en el dist: $SVG"
