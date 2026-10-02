@@ -30,15 +30,21 @@
 //!
 //! Con eso, cada línea de aquí está comentada con *por qué*, no con *qué*.
 
-use std::collections::VecDeque;
-
 pub mod jni_bridge;
 
-use graphite_editor::application::{Editor, Environment, Host, Platform};
+use graphite_editor::messages::frontend::FrontendMessage;
 use graphite_editor::messages::portfolio::PortfolioMessage;
 use graphite_editor::messages::prelude::*;
+
+// El wrapper del escritorio. Es lo que hace barato este port: el dispatcher de
+// mensajes y las dos funciones de la frontera ya estan escritos y probados, y
+// no son especificos de ninguna plataforma.
+use graphite_desktop_wrapper::{
+    DesktopFrontendMessage, DesktopWrapper, DesktopWrapperMessage, NodeGraphExecutionResult,
+    deserialize_editor_message, serialize_frontend_messages,
+};
+
 use graph_craft::application_io::resource::{HashMapResourceStorage, ResourceStorage};
-use graph_craft::application_io::PlatformApplicationIo;
 use wgpu_executor::WgpuContext;
 
 use document_container::store::{DocumentStore, MemoryStore};
@@ -90,8 +96,15 @@ pub struct Engine {
     /// 0 produce una superficie degenerada.
     configured: (u32, u32),
 
-    /// El motor.
-    pub editor: Editor,
+    /// El motor, y la capa de mensajes que upstream escribe para el escritorio.
+///
+/// No se habla con el `Editor` directamente: se habla con `DesktopWrapper`, que
+/// es lo mismo que hace el escritorio. La diferencia no es de estilo, es que el
+/// dispatcher se encarga de cosas que son fáciles de olvidar y que rompen la
+/// app si se ignoran: interceptar mensajes del editor antes de dárselos,
+/// reinyectar las respuestas del motor en el motor, y agrupar mensajes en un
+/// solo `Batched`.
+    pub wrapper: DesktopWrapper,
     pub pipeline: wgpu::RenderPipeline,
     pub sampler: wgpu::Sampler,
     /// Textura 1x1 transparente, para el frame 0 (cuando el motor aún no ha
@@ -113,6 +126,16 @@ pub struct Engine {
     /// Veces que el tamaño real del swapchain ha discrepado de lo configurado.
     /// Si esto sube, hay un `surfaceChanged` que no está llegando.
     pub resizes: u32,
+
+    /// Mensajes recibidos del frontend. Si esto se queda en 0 con la UI puesta,
+    /// el shim JS no está llegando a `on_native_message` (el problema más
+    /// probable siendo que `window.sendNativeMessage` no exista).
+    pub messages_in: u32,
+    /// `DesktopFrontendMessage` de escritorio que aún no se manejan. Ver
+    /// `on_native_message`.
+    pub messages_descartados: u32,
+    /// Si el frontend ya ha pedido conexión.
+    pub frontend_conectado: bool,
 }
 
 impl Engine {
@@ -141,9 +164,9 @@ impl Engine {
         let alpha_mode = Self::pick_alpha_mode(&surface, &adapter);
 
         // ------------------------------------------------------------------
-        // 3. Motor
+        // 3. Motor, vía el wrapper de upstream
         // ------------------------------------------------------------------
-        fase("3 Editor::new");
+        fase("3 DesktopWrapper::new");
         // Almacenamientos EN MEMORIA. Es lo que hace el wrapper web
         // (`frontend/wrapper/src/editor_wrapper.rs`) y es lo correcto aquí: una
         // app móvil no puede usar rutas del sistema de ficheros como lo hace el
@@ -153,44 +176,42 @@ impl Engine {
         let document_store: std::sync::Arc<dyn DocumentStore> =
             std::sync::Arc::new(MemoryStore::default());
 
-        // `Platform::Android` es una variante AÑADIDA al motor por este port
-        // (ver `editor/src/application.rs`). Antes se emulaba con
-        // `Desktop` + `Host::Linux`, que en realidad solo mentía: no hay
-        // ventana, no hay atajos de teclado de escritorio y la app es una
-        // superficie táctil a pantalla completa.
-        let environment = Environment {
-            platform: Platform::Android,
-            host: Host::Linux,
-        };
-        // `wake` lo usaría el escritorio para despertar el bucle de eventos. Aquí
-        // el bucle es propio, así que no hay a quién avisar.
+        // `wake` lo usaría el escritorio para despertar el bucle de eventos.
+        // Aquí el bucle es propio, así que no hay a quién avisar.
         let wake = std::sync::Arc::new(|| {});
-        let application_io = PlatformApplicationIo::new_with_context(context.clone());
-        let mut editor = Editor::new(
-            environment,
+
+        // `DesktopWrapper::new` recibe el `WgpuContext` y construye el `Editor`
+        // con `Platform::Android` —el brazo ese es un cambio de tres lineas en
+        // upstream, porque si no el crate ni siquiera compila para android—.
+        let mut wrapper = DesktopWrapper::new(
             0,
             resource_storage,
             document_store,
-            application_io,
+            context.clone(),
             wake,
         );
-        fase("4 Editor construido");
+        fase("4 DesktopWrapper construido");
 
         // ------------------------------------------------------------------
-        // 4. Un documento. Sin documento el grafo no tiene nada que evaluar y
-        //    `run_node_graph()` no devuelve textura.
+        // 4. Un documento. Sin documento el grafo de nodos no tiene nada que
+        //    evaluar y `execute_node_graph()` no devuelve textura.
+        //
+        //    El escritorio NO crea el documento: lo crea el frontend cuando
+        //    carga. Aquí se sigue haciendo a mano para que el lienzo tenga algo
+        //    desde el arranque; cuando el frontend este montado y cree el suyo,
+        //    esto se puede quitar.
         // ------------------------------------------------------------------
         fase("5 documento");
-        let respuestas = editor.handle_message(Message::Portfolio(
-            PortfolioMessage::NewDocumentWithName {
+        let respuestas = wrapper.dispatch(DesktopWrapperMessage::FromWeb(Box::new(
+            Message::Portfolio(PortfolioMessage::NewDocumentWithName {
                 name: "Untitled".into(),
-            },
-        ));
-        let n = respuestas.len();
-        for r in respuestas {
-            editor.handle_message(r);
-        }
-        log::info!("[{}] documento: {} respuestas, realimentadas al motor", TAG, n);
+            }),
+        )));
+        log::info!(
+            "[{}] documento creado: {} respuestas al frontend",
+            TAG,
+            respuestas.len()
+        );
 
         // ------------------------------------------------------------------
         // 5. Blit
@@ -218,7 +239,7 @@ impl Engine {
             surface_format,
             alpha_mode,
             configured: (0, 0),
-            editor,
+            wrapper,
             pipeline,
             sampler,
             fallback,
@@ -227,6 +248,9 @@ impl Engine {
             frames: 0,
             rendered: 0,
             resizes: 0,
+            messages_in: 0,
+            messages_descartados: 0,
+            frontend_conectado: false,
         })
     }
 
@@ -301,20 +325,140 @@ impl Engine {
         //
         // El tamaño sale de `RenderConfig.viewport: Footprint`
         // (node-graph/libraries/application-io/src/lib.rs) y lo manda
-        // `ViewportMessage::Update`, que es lo que hace el frontend web. En
-        // Android no hay frontend todavía: somos nosotros.
-        let vp = self.editor.handle_message(ViewportMessage::Update {
-            x: 0.,
-            y: 0.,
-            width: width as f64,
-            height: height as f64,
-            // 1.0 = un pixel de pantalla por unidad de documento.
-            scale: 1.,
-        });
-        for r in vp {
-            self.editor.handle_message(r);
-        }
+        // `ViewportMessage::Update`.
+        //
+        // En el escritorio lo manda el frontend. Aquí lo mandamos nosotros al
+        // arrancar, para que el lienzo tenga el tamaño correcto desde el primer
+        // frame y no haya un parpadeo de 1x1. Cuando el frontend esté montado,
+        // él lo mandará con las medidas reales del panel de dibujo, que es lo
+        // que hay que acabar usando: el viewport del MOTOR no es la pantalla
+        // entera, es el rectángulo donde va el lienzo, que en la UI real es más
+        // pequeño que la pantalla porque hay paneles alrededor.
+        self.wrapper.dispatch(DesktopWrapperMessage::FromWeb(Box::new(
+            Message::Viewport(ViewportMessage::Update {
+                x: 0.,
+                y: 0.,
+                width: width as f64,
+                height: height as f64,
+                // 1.0 = un pixel de pantalla por unidad de documento.
+                scale: 1.,
+            }),
+        )));
         log::info!("[{}] viewport {}x{} actualizado", TAG, width, height);
+    }
+
+    /// **Un mensaje del frontend**, ya en bytes.
+    ///
+    /// Devuelve los bytes de la respuesta para el frontend, o `None` si no hay
+    /// nada que mandarle de vuelta.
+    ///
+    /// Esto ES la frontera, y es enteramente código de upstream:
+    ///
+    ///   `deserialize_editor_message`  ->  `DesktopWrapperMessage`
+    ///   `wrapper.dispatch`            ->  el motor responde
+    ///   `serialize_frontend_messages` ->  `Vec<u8>` para el JS
+    ///
+    /// Lo único propio es decidir qué hacer con los `DesktopFrontendMessage`
+    /// que NO son `ToWeb`: en el escritorio son diálogos de fichero, menú,
+    /// portapapeles y persistencia. Aquí todavía no hay gestión de ficheros ni
+    /// menú, así que se cuentan y se loguean. Contados porque un
+    /// `DesktopFrontendMessage` descartado en silencio es un botón que no hace
+    /// nada y nadie sabe por qué.
+    pub fn on_native_message(&mut self, datos: &[u8]) -> Option<Vec<u8>> {
+        let mensaje = match deserialize_editor_message(datos) {
+            Some(m) => m,
+            None => {
+                log::warn!(
+                    "[{}] mensaje del frontend NO deserializable ({} bytes)",
+                    TAG,
+                    datos.len()
+                );
+                return None;
+            }
+        };
+
+        self.messages_in += 1;
+
+        let respuestas = self.wrapper.dispatch(mensaje);
+
+        // Separar lo que va al frontend de lo que es una petición al escritorio.
+        let mut para_web: Vec<FrontendMessage> = Vec::new();
+        let mut otros = 0usize;
+        for r in respuestas {
+            match r {
+                DesktopFrontendMessage::ToWeb(mut ms) => para_web.append(&mut ms),
+                _ => otros += 1,
+            }
+        }
+
+        if otros > 0 {
+            log::info!(
+                "[{}] {} DesktopFrontendMessage de escritorio SIN manejar todavia \
+                 (dialogos de fichero, menu, portapapeles, persistencia)",
+                TAG,
+                otros
+            );
+            self.messages_descartados += otros as u32;
+        }
+
+        if para_web.is_empty() {
+            return None;
+        }
+
+        match serialize_frontend_messages(para_web) {
+            Some(bytes) => Some(bytes),
+            None => {
+                log::error!("[{}] no se pudieron serializar los FrontendMessage", TAG);
+                None
+            }
+        }
+    }
+
+    /// El frontend ha terminado de arrancar y pide conexión
+    /// (`window.initializeNativeCommunication`).
+    ///
+    /// En el escritorio esto lo dispara el `on_context_created` de CEF. Aquí lo
+    /// llama el shim JS del WebView.
+    ///
+    /// Lo que hace falta en este punto es el estado de la aplicación:
+    /// preferencias, documentos del último uso y el tamaño de la ventana. En el
+    /// escritorio los carga `desktop/src/app.rs`; en Android todavía no hay
+    /// persistencia, así que solo se le dice al frontend las medidas.
+    pub fn on_initialized(&mut self, width: u32, height: u32) {
+        log::info!("[{}] el frontend pide conexión ({}x{})", TAG, width, height);
+
+        // El frontend necesita saber cuánto tiene de ventana para maquetar sus
+        // paneles. Sin esto se maqueta a 0 y se ve la UI pero con las
+        // proporciones raras.
+        let respuestas = self.wrapper.dispatch(DesktopWrapperMessage::UpdateMaximized {
+            maximized: true,
+        });
+        let _ = respuestas;
+        self.wrapper.dispatch(DesktopWrapperMessage::UpdateFullscreen { fullscreen: true });
+
+        // Sin persistencia todavia: se avisara al frontend con un estado vacio
+        // en cuanto se implemente. Por ahora solo se registra que se ha conectado
+        // y cuantas respuestas produjo el arranque.
+        let r = self.wrapper.dispatch(DesktopWrapperMessage::Wake);
+        log::info!(
+            "[{}] frontend conectado. Wake produjo {} respuestas",
+            TAG,
+            r.len()
+        );
+        self.frontend_conectado = true;
+    }
+
+    /// ¿Ya ha conectado el frontend?
+    pub fn frontend_conectado(&self) -> bool {
+        self.frontend_conectado
+    }
+
+    pub fn messages_in(&self) -> u32 {
+        self.messages_in
+    }
+
+    pub fn messages_descartados(&self) -> u32 {
+        self.messages_descartados
     }
 
     /// GPU: el mismo device que después dibuja en la pantalla.
@@ -588,32 +732,46 @@ impl Engine {
     /// «el motor no ha renderizado» con «el motor no está**.
     pub fn frame(&mut self) -> Result<bool, String> {
         // ------------------------------------------------------------------
-        // 1. Recoger lo que el motor nos devuelve.
+        // 1. Bombear la evaluación del grafo de nodos.
         //
-        // El motor genera mensajes para sí mismo (recalcular, invalidar, etc.) y
-        // hay que devolvérselos. En el escritorio esto lo hace el dispatcher;
-        // aquí es un bucle corto porque no hay eventos de entrada todavía.
+        // El motor se genera mensajes a sí mismo (recalcular, invalidar, etc.) y
+        // hay que devolvérselos por el mismo canal. El dispatcher de upstream lo
+        // hace con `DesktopWrapperMessage::PollNodeGraphEvaluation`, que es
+        // literalmente lo que hace el escritorio en `desktop/src/app.rs:441`.
+        //
+        // Las respuestas que salen NO se pasan al frontend: son mensajes internos
+        // del motor. Es lo que hace el escritorio también.
         // ------------------------------------------------------------------
-        let mut responses: VecDeque<Message> = VecDeque::new();
-        if let Err(e) = self.editor.poll_node_graph_evaluation(&mut responses) {
-            log::warn!("[{}] poll_node_graph_evaluation: {}", TAG, e);
-        }
-        let mut pendientes = 0usize;
-        while let Some(m) = responses.pop_back() {
-            pendientes += 1;
-            self.editor.handle_message(m);
-        }
-        if pendientes > 0 {
-            log::info!("[{}] el motor pidió {} mensajes de vuelta", TAG, pendientes);
+        let bombear = self
+            .wrapper
+            .dispatch(DesktopWrapperMessage::PollNodeGraphEvaluation);
+        if !bombear.is_empty() {
+            self.messages_descartados += bombear.len() as u32;
+            if self.frames <= 3 {
+                log::info!(
+                    "[{}] bombeo produjo {} respuestas del motor (internas)",
+                    TAG,
+                    bombear.len()
+                );
+            }
         }
 
         // ------------------------------------------------------------------
         // 2. Ejecutar el grafo.
         //
-        // Devuelve `None` cuando no hay nada nuevo que renderizar. El motor es
-        // demand-driven y eso es lo correcto; ver el campo `last_texture`.
+        // `DesktopWrapper::execute_node_graph` es la misma función que llama el
+        // hilo de render del escritorio (`desktop/src/app.rs:86`), y devuelve
+        // un enum en vez de una tupla para no perder el caso de "ha corrido pero
+        // no ha producido textura", que es distinto de "no ha corrido".
+        //
+        // Devuelve `HasRun(None)` cuando no hay nada nuevo que renderizar: el
+        // motor es demand-driven y eso es lo correcto; ver `last_texture`.
         // ------------------------------------------------------------------
-        let (ran, textura) = pollster::block_on(graphite_editor::node_graph_executor::run_node_graph());
+        let (ran, textura) =
+            match pollster::block_on(DesktopWrapper::execute_node_graph()) {
+                NodeGraphExecutionResult::HasRun(t) => (true, t),
+                NodeGraphExecutionResult::NotRun => (false, None),
+            };
         if let Some(t) = textura {
             self.last_texture = Some(t);
         }
@@ -782,8 +940,15 @@ impl Engine {
     /// Estado legible para el log. Se llama desde JNI.
     pub fn status(&self) -> String {
         format!(
-            "frames={} lienzo={} swapchain_configurado={:?} resizes={}",
-            self.frames, self.rendered, self.configured, self.resizes
+            "frames={} lienzo={} swapchain_configurado={:?} resizes={} \
+             frontend={} msj_in={} msj_descartados={}",
+            self.frames,
+            self.rendered,
+            self.configured,
+            self.resizes,
+            if self.frontend_conectado { "conectado" } else { "NO" },
+            self.messages_in,
+            self.messages_descartados,
         )
     }
 }

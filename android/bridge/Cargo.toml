@@ -19,6 +19,27 @@ crate-type = ["cdylib", "rlib"]
 # que se rompe es este fichero, no el motor.
 # ------------------------------------------------------------------
 graphite-editor = { path = "../../editor" }
+
+# ------------------------------------------------------------------
+# EL WRAPPER DE ESCRITORIO: la pieza clave de esta fase.
+#
+# `desktop/wrapper` es el Rust que hay ENTRE el frontend y el motor, y es
+# agnóstico de plataforma: el escritorio lo usa dentro de CEF y aquí se usa
+# igual. Contiene el dispatcher de mensajes y las dos funciones de la frontera:
+#
+#   deserialize_editor_message   <->  graphite_editor::Message
+#   serialize_frontend_messages  <->  Vec<FrontendMessage>
+#
+# Reutilizarlo es lo que hace este port barato. Reescribir el dispatcher son
+# ~150 líneas de lógica de mensajes que upstream ya tiene probadas en
+# producción, y que habría que mantener sincronizadas con el motor para siempre.
+#
+# A su vez, `desktop/wrapper` depende de `frontend/wrapper` —el crate del
+# frontend— como `rlib` NATIVA, con `default-features = false, features =
+# ["editor"]`. Ese es el truco que lo hace posible: el formato de los mensajes
+# está escrito una sola vez y funciona igual dentro y fuera del wasm.
+# ------------------------------------------------------------------
+graphite-desktop-wrapper = { path = "../../desktop/wrapper" }
 graph-craft = { path = "../../node-graph/graph-craft" }
 wgpu-executor = { path = "../../node-graph/libraries/wgpu-executor" }
 wgpu-sync = { path = "../../libraries/wgpu-sync" }

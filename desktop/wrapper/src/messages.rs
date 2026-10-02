@@ -1,7 +1,11 @@
 use graphite_editor::messages::prelude::FrontendMessage;
 use std::path::PathBuf;
 
-pub(crate) use graphite_editor::messages::prelude::Message as EditorMessage;
+// `pub`, no `pub(crate)`: es el tipo que aparece dentro de
+// `DesktopWrapperMessage::FromWeb`, que sí es público. Un embedder que use
+// este crate —el de escritorio, o el puente JNI de Android— necesita nombrar
+// este tipo para construir mensajes, y con `pub(crate)` no puede.
+pub use graphite_editor::messages::prelude::Message as EditorMessage;
 
 pub use graphite_editor::messages::frontend::utility_types::{DocumentInfo, FileDialogOptions, FileFilter, PersistedState};
 pub use graphite_editor::messages::input_mapper::utility_types::keyboard::{Key, ModifierKeys};

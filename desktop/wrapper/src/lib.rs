@@ -38,9 +38,18 @@ impl DesktopWrapper {
 		let host = Host::Windows;
 		#[cfg(target_os = "macos")]
 		let host = Host::Mac;
-		#[cfg(target_os = "linux")]
+		#[cfg(any(target_os = "linux", target_os = "android"))]
 		let host = Host::Linux;
-		let env = Environment { platform: Platform::Desktop, host };
+
+		// Android es una superficie táctil a pantalla completa, no una ventana de
+		// escritorio con atajos de teclado. Sin este brazo, `host` no existiría
+		// y el crate ni siquiera compilaría para ese target.
+		#[cfg(target_os = "android")]
+		let platform = Platform::Android;
+		#[cfg(not(target_os = "android"))]
+		let platform = Platform::Desktop;
+
+		let env = Environment { platform, host };
 		let application_io = PlatformApplicationIo::new_with_context(wgpu_context);
 
 		Self {
