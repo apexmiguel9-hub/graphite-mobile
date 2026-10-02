@@ -69,6 +69,20 @@ pub struct Engine {
     pub surface: wgpu::Surface<'static>,
     pub surface_format: wgpu::TextureFormat,
 
+    /// Composición alfa de la superficie.
+    ///
+    /// No se fija a mano: se pregunta a la superficie qué admite y se elige.
+    ///
+    /// MEDIDO (Motorola G56, PowerVR BXM-8-256, Vulkan): pedir `Opaque` a pelo
+    /// aborta el arranque con
+    ///     Requested alpha mode Opaque is not in the list of supported alpha
+    ///     modes: [Inherit]
+    /// Ese driver solo ofrece `Inherit`. Se prefiere `Opaque` porque es lo
+    /// correcto para una superficie que pinta opaco, pero si no está, se coge
+    /// lo que haya. El blit devuelve alfa 1 siempre, así que el resultado
+    /// visible es el mismo en cualquier caso.
+    alpha_mode: wgpu::CompositeAlphaMode,
+
     /// Extensión con la que se configuró la superficie por última vez.
     ///
     /// `(0, 0)` significa «nunca configurada». Es un estado válido: la
@@ -124,6 +138,7 @@ impl Engine {
         fase("2 superficie");
         let surface = Self::surface(env, surface_job, raw_instance)?;
         let surface_format = Self::pick_format(&surface, &adapter);
+        let alpha_mode = Self::pick_alpha_mode(&surface, &adapter);
 
         // ------------------------------------------------------------------
         // 3. Motor
@@ -201,6 +216,7 @@ impl Engine {
             context,
             surface,
             surface_format,
+            alpha_mode,
             configured: (0, 0),
             editor,
             pipeline,
@@ -243,9 +259,7 @@ impl Engine {
                     // compositor sin añadir input lag perceptible al dibujar.
                     desired_maximum_frame_latency: 2,
                     present_mode: wgpu::PresentMode::Fifo,
-                    // La superficie es opaca: no hay nada detrás que mostrar y no
-                    // queremos que el compositor mezcle con el fondo.
-                    alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+                    alpha_mode: self.alpha_mode,
                     view_formats: vec![],
                 },
             );
@@ -366,6 +380,35 @@ impl Engine {
             f
         );
         f
+    }
+
+    /// Composición alfa que admite esta superficie.
+    ///
+    /// Se prefiere `Opaque` —es lo correcto para una superficie que pinta opaco—
+    /// pero algunos drivers solo ofrecen `Inherit`, y pedir `Opaque` a pelo es un
+    /// error de validación que **aborta la app**. Ver la nota del campo.
+    fn pick_alpha_mode(
+        surface: &wgpu::Surface<'_>,
+        adapter: &wgpu::Adapter,
+    ) -> wgpu::CompositeAlphaMode {
+        let modos = surface.get_capabilities(adapter).alpha_modes;
+        for preferido in [
+            wgpu::CompositeAlphaMode::Opaque,
+            wgpu::CompositeAlphaMode::PreMultiplied,
+        ] {
+            if modos.contains(&preferido) {
+                log::info!("[{}] alpha mode de superficie: {:?}", TAG, preferido);
+                return preferido;
+            }
+        }
+        let modo = modos[0];
+        log::warn!(
+            "[{}] la superficie no ofrece Opaque ni PreMultiplied; usando {:?} (los que hay: {:?})",
+            TAG,
+            modo,
+            modos
+        );
+        modo
     }
 
     /// Superficie de wgpu a partir del `Surface` de Java.
