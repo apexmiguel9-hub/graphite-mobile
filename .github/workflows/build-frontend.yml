@@ -133,15 +133,51 @@ jobs:
           echo "  SVG totales: $SVG"
           test "$SVG" -gt 100 || { echo "::error::solo $SVG SVG: el frontend saldra sin iconos"; exit 1; }
 
-      - name: Install wasm-bindgen and wasm-opt
+      # ------------------------------------------------------------------
+      # LAS MISMAS VERSIONES QUE PINEA UPSTREAM, no unas elegidas aqui.
+      #
+      # `wasm-bindgen` esta pineado a `=0.2.121` en el `Cargo.toml` del
+      # workspace, con un aviso de mantenerlo sincronizado con el CLI. Si el CLI
+      # no coincide con el crate, el glue sale incompatible y el fallo aparece
+      # en el MOVIL, como un error de JS, no en el build.
+      #
+      # Binaryen va en 130 con SHA-256 por plataforma
+      # (`tools/cargo-run/src/requirements/wasm_opt.rs`). Sin ese SHA, un binario
+      # de terceros descargado y ejecutado sin verificar es exactamente lo que
+      # hace `install-pinned-android-sdk.sh` para el NDK, y esta vez con
+      #ejecucion de codigo.
+      # ------------------------------------------------------------------
+      - name: Install wasm-bindgen-cli and wasm-opt (versiones pineadas por upstream)
         run: |
           set -euo pipefail
-          cargo install wasm-bindgen-cli --version 0.2 --locked
-          # `wasm-opt` va en el binario de `binaryen`, no se instala con cargo.
+
+          # --- wasm-bindgen-cli 0.2.121 ---
+          # Se descarga el binario precompilado en vez de `cargo install`: es el
+          # mismo artefacto que publica el proyecto y tarda segundos en vez de
+          # varios minutos compilando.
+          WBG=0.2.121
+          curl -fsSL -o /tmp/wbg.tar.gz \
+            "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/${WBG}/wasm-bindgen-${WBG}-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf /tmp/wbg.tar.gz -C /tmp
+          # El tarball trae el binario en la raiz.
+          install -m755 "/tmp/wasm-bindgen-${WBG}-x86_64-unknown-linux-musl/wasm-bindgen" /usr/local/bin/wasm-bindgen
+          wasm-bindgen --version
+
+          # --- binaryen 130 ---
+          BE=130
+          BE_SHA=0a18362361ad05465118cd8eeb72edaeec89de6894bc283576ef4e07aa3babcc
           curl -fsSL -o /tmp/binaryen.tar.gz \
-            "https://github.com/WebAssembly/binaryen/releases/download/version_123/binaryen-version_123-x86_64-linux.tar.gz"
+            "https://github.com/WebAssembly/binaryen/releases/download/version_${BE}/binaryen-version_${BE}-x86_64-linux.tar.gz"
+          REAL=$(sha256sum /tmp/binaryen.tar.gz | cut -d' ' -f1)
+          if [ "$REAL" != "$BE_SHA" ]; then
+            echo "::error::SHA-256 de binaryen no coincide"
+            echo "::error::  esperado: $BE_SHA"
+            echo "::error::  obtenido: $REAL"
+            exit 1
+          fi
+          echo "  SHA-256 de binaryen correcto"
           tar -xzf /tmp/binaryen.tar.gz -C /tmp
-          echo "/tmp/binaryen-version_123/bin" >> "$GITHUB_PATH"
+          echo "/tmp/binaryen-version_${BE}/bin" >> "$GITHUB_PATH"
           wasm-opt --version
 
       # ------------------------------------------------------------------
