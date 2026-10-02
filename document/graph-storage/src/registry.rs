@@ -1,7 +1,10 @@
-use crate::{Attributes, Network, NetworkId, Node, NodeId, PeerId, ResourceId, ResourceStore, SourceKey, TimeStamp, UserId};
+use crate::{Attributes, Network, NetworkId, Node, NodeId, PeerId, ResourceEntry, ResourceId, ResourceStore, SourceKey, TimeStamp, UserId};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// The live document. Every field, existence included, is last-writer-wins on a timestamp, so the registry depends on the
+/// set of ops applied and not their order. A removed entity keeps a tombstone: an older op lands on it, a newer one
+/// revives the entity.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Registry {
 	pub node_instances: HashMap<NodeId, Node>,
@@ -12,6 +15,15 @@ pub struct Registry {
 	/// Which person each device is, from `RegistryDelta::RegisterPeer`, so undo and authorship scope by person.
 	pub peer_users: HashMap<PeerId, PeerRegistration>,
 	pub attributes: Attributes,
+	/// Tombstones of removed nodes, so an op on one is ordered against its removal whichever arrives first.
+	#[serde(default)]
+	pub removed_nodes: HashMap<NodeId, Tombstone<Node>>,
+	/// Tombstones of removed networks; see [`removed_nodes`](Self::removed_nodes).
+	#[serde(default)]
+	pub removed_networks: HashMap<NetworkId, Tombstone<Network>>,
+	/// Tombstones of removed resources; see [`removed_nodes`](Self::removed_nodes).
+	#[serde(default)]
+	pub removed_resources: HashMap<ResourceId, Tombstone<ResourceEntry>>,
 }
 
 /// A device's registration to a person, and when it was made.
@@ -21,7 +33,27 @@ pub struct PeerRegistration {
 	pub timestamp: TimeStamp,
 }
 
+/// A removed entity's content, for reviving it, and its removal stamp.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Tombstone<T> {
+	pub content: T,
+	pub timestamp: TimeStamp,
+	/// Nothing has added the entity yet: it stays dead until an addition folds in, the content holding writes that came first.
+	#[serde(default)]
+	pub placeholder: bool,
+}
+
 impl Registry {
+	/// The node under `id`, live or as removed, for a reference to a node the runtime cannot hold.
+	pub(crate) fn node_or_removed(&self, id: NodeId) -> Option<&Node> {
+		self.node_instances.get(&id).or_else(|| self.removed_nodes.get(&id).map(|mark| &mark.content))
+	}
+
+	/// The network under `id`, live or as it was when removed.
+	pub(crate) fn network_or_removed(&self, id: NetworkId) -> Option<&Network> {
+		self.networks.get(&id).or_else(|| self.removed_networks.get(&id).map(|mark| &mark.content))
+	}
+
 	/// True if both registries agree on every value-bearing field, ignoring per-slot and
 	/// per-attribute timestamps. Mirrors `compute_deltas`'s value-only semantics, so unchanged
 	/// state at a stamped slot doesn't count as drift. `peer_users` is excluded: it isn't diffed by
@@ -91,10 +123,10 @@ impl Registry {
 }
 
 pub(crate) fn attributes_value_equal(a: &Attributes, b: &Attributes) -> bool {
-	if a.len() != b.len() {
+	if crate::attributes::live(a).count() != crate::attributes::live(b).count() {
 		return false;
 	}
-	a.iter().all(|(key, value)| b.get(key).is_some_and(|other| value.value == other.value))
+	crate::attributes::live(a).all(|(key, value)| b.get(key).is_some_and(|other| !other.deleted && value.value == other.value))
 }
 
 /// Value-level resource comparison: same resolved hashes and same source chains (keyed by
@@ -106,8 +138,8 @@ pub(crate) fn resources_value_equal(a: &ResourceStore, b: &ResourceStore) -> boo
 	a.iter().all(|(id, entry)| {
 		b.get(id).is_some_and(|other| {
 			entry.hash == other.hash
-				&& entry.sources.len() == other.sources.len()
-				&& entry.sources.iter().all(|(key, value)| other.source(key).is_some_and(|other_value| value.source == other_value.source))
+				&& entry.live_sources().count() == other.live_sources().count()
+				&& entry.live_sources().all(|(key, value)| other.source(key).is_some_and(|other_value| value.source == other_value.source))
 		})
 	})
 }
