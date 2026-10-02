@@ -5,7 +5,11 @@ use graphite_editor::messages::frontend::FrontendMessage;
 use graphite_editor::messages::prelude::Wake;
 
 use message_dispatcher::DesktopWrapperMessageDispatcher;
-use messages::{DesktopFrontendMessage, DesktopWrapperMessage};
+// `pub`, no privado: estos dos enums son la frontera publica de este crate.
+// `dispatch` los acepta y los devuelve, asi que un embedder que use
+// `DesktopWrapper` (el escritorio, o el puente JNI de Android) necesita
+// nombrarlos. Sin esto, `error[E0603]: enum is private` en el que lo use.
+pub use messages::{DesktopFrontendMessage, DesktopWrapperMessage};
 use std::sync::Arc;
 
 pub use graph_craft::application_io::resource::MmapResourceStorage;
