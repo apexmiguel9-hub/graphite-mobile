@@ -248,6 +248,20 @@ impl Engine {
 
         if self.configured != (width, height) {
             let anterior = self.configured;
+
+            // Esperar a que la GPU quede libre ANTES de reconfigurar.
+            //
+            // MEDIDO (Motorola G56): sin esto,
+            //     In Surface::configure
+            //       Failed to wait for GPU to come idle before reconfiguring
+            //       the Surface
+            //
+            // No es un detalle: `run_node_graph()` encola trabajo de render en
+            // el device, y reconfigurar la superficie con ese trabajo en vuelo
+            // es un error de validación. Y los errores de wgpu son FATALES por
+            // defecto, así que la app muere.
+            self.context.device.poll(wgpu::PollType::Wait);
+
             self.surface.configure(
                 &self.context.device,
                 &wgpu::SurfaceConfiguration {
