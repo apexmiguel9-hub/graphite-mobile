@@ -312,7 +312,7 @@ impl Document {
 				apply_attribute_delta(delta, timestamp, force, &mut registry.attributes, TimeStamp::ORIGIN);
 			}
 			// Merge is a structural sync point only; it mutates no registry state.
-			RegistryDelta::Merge { .. } | RegistryDelta::Other(_) => {}
+			RegistryDelta::Merge { .. } | RegistryDelta::EndTransaction | RegistryDelta::Other(_) => {}
 		}
 		Ok(())
 	}
@@ -417,6 +417,7 @@ impl Document {
 				RegistryDelta::AddResource { id, entry: snapshot }
 			}
 			RegistryDelta::Merge { extra_parents } => RegistryDelta::Merge { extra_parents: extra_parents.clone() },
+			RegistryDelta::EndTransaction => RegistryDelta::EndTransaction,
 			&RegistryDelta::Other(_) => RegistryDelta::Other(Value::None),
 		})
 	}
