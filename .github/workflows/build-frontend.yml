@@ -1,0 +1,247 @@
+name: Graphite Mobile frontend
+
+# ------------------------------------------------------------------
+# COMPILA EL FRONTEND (Svelte) EN MODO NATIVO → `frontend/dist`
+#
+# Esto es lo que va dentro del WebView. No es una copia del sitio web: es el
+# mismo frontend compilado con `--mode native`, que es como lo carga el
+# escritorio dentro de CEF.
+#
+# POR QUÉ NO ES "LA WEB":
+#
+# En modo web (`vite build`) el frontend lleva el motor de Graphite DENTRO del
+# wasm, compilado a wasm. En el móvil el motor ya está en el nativo (58 MB de
+# `.so`, con Vulkan y PowerVR). Compilarlo otra vez a wasm sería tirar el
+# trabajo y perder el rendimiento de GPU.
+#
+# En modo nativo el wasm es solo la capa de traducción de mensajes: pequeño y
+# rápido de compilar. El motor se queda en el nativo y los dos se hablan por
+# unos pocos globals de JS (ver más abajo).
+#
+# LA RECETA ES DE UPSTREAM, NO INVENTADA. `tools/cargo-run/src/frontend.rs`
+# hace exactamente esto para el escritorio (`build_wasm_steps`), y
+# `frontend/vite.config.ts` ya tiene el modo `native` con su alias de
+# `/wrapper/pkg/` a `/wrapper/pkg-native/`.
+#
+# LA FRONTERA ENTRE JS Y EL MOTOR, en tres globales (medido leyendo el codigo):
+#
+#   JS -> nativo   window.sendNativeMessage(ArrayBuffer)
+#                  Implementado en frontend/wrapper/src/native_communication.rs
+#                  (`send_message_to_cef`, que hace `Reflect::get(global,
+#                  "sendNativeMessage")`). El cuerpo es un JSON UTF-8; lo
+#                  decodifica `desktop::wrapper::deserialize_editor_message`.
+#
+#   nativo -> JS   window.receiveNativeMessageData = <ArrayBuffer>
+#                  window.receiveNativeMessage(window.receiveNativeMessageData)
+#                  Exactamente lo que hace `desktop/ui/src/internal/
+#                  render_process_handler.rs` con `execute_java_script`.
+#
+#   arranque       window.initializeNativeCommunication()
+#
+# El nombre `send_message_to_cef` miente: no es CEF, es "el nativo". Por eso
+# esto funciona igual en un WebView.
+# ------------------------------------------------------------------
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'frontend/**'
+      - 'editor/**'
+      - 'node-graph/**'
+      - 'document/**'
+      - 'libraries/**'
+      - 'proc-macros/**'
+      - 'demo-artwork/**'
+      - '.branding'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build-frontend.yml'
+  workflow_dispatch:
+
+env:
+  WASM_PKG_NAME: graphite_wasm_wrapper
+
+jobs:
+  build-frontend:
+    name: Frontend Svelte en modo nativo
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: graphite-wasm-frontend
+
+      - name: Cache npm
+        uses: actions/cache@v4
+        with:
+          path: frontend/node_modules
+          key: npm-${{ hashFiles('frontend/package-lock.json') }}
+          restore-keys: npm-
+
+      # ------------------------------------------------------------------
+      # ASSETS DE MARCA.
+      #
+      # `frontend/vite.config.ts` resuelve los iconos a
+      # `../branding/<set>/<icono>.svg?raw`, y `branding/` esta en .gitignore:
+      # no esta en el repo, se descarga de la URL de `.branding`.
+      #
+      # Sin este paso el frontend COMPILA pero sale sin un solo icono, que es un
+      # fallo silencioso: verde en CI, UI vacia en el movil.
+      #
+      # El SHA-256 se comprueba contra el del fichero `.branding` del propio
+      # repo, no contra uno escrito aqui: asi el pin lo mantiene upstream.
+      # ------------------------------------------------------------------
+      - name: Fetch branding assets (pinned, SHA-256 verificado)
+        run: |
+          set -euo pipefail
+          URL=$(sed -n '1p' .branding)
+          SHA=$(sed -n '2p' .branding)
+          echo "  url: $URL"
+          echo "  sha256 esperado: $SHA"
+          curl -fsSL "$URL" -o /tmp/branding.tar.gz
+          REAL=$(sha256sum /tmp/branding.tar.gz | cut -d' ' -f1)
+          if [ "$REAL" != "$SHA" ]; then
+            echo "::error::SHA-256 del tarball de branding no coincide"
+            echo "::error::  esperado: $SHA"
+            echo "::error::  obtenido: $REAL"
+            exit 1
+          fi
+          echo "  SHA-256 correcto"
+          # El tarball de GitHub tiene un directorio raiz con el sha.
+          mkdir -p branding
+          tar -xzf /tmp/branding.tar.gz -C branding --strip-components=1
+          echo "  contenido:"
+          ls branding | head -10
+          SVG=$(find branding -name '*.svg' | wc -l)
+          echo "  SVG totales: $SVG"
+          test "$SVG" -gt 100 || { echo "::error::solo $SVG SVG: el frontend saldra sin iconos"; exit 1; }
+
+      - name: Install wasm-bindgen and wasm-opt
+        run: |
+          set -euo pipefail
+          cargo install wasm-bindgen-cli --version 0.2 --locked
+          # `wasm-opt` va en el binario de `binaryen`, no se instala con cargo.
+          curl -fsSL -o /tmp/binaryen.tar.gz \
+            "https://github.com/WebAssembly/binaryen/releases/download/version_123/binaryen-version_123-x86_64-linux.tar.gz"
+          tar -xzf /tmp/binaryen.tar.gz -C /tmp
+          echo "/tmp/binaryen-version_123/bin" >> "$GITHUB_PATH"
+          wasm-opt --version
+
+      # ------------------------------------------------------------------
+      # EL WASM EN MODO NATIVO.
+      #
+      # `--no-default-features --features native` es lo importante. Los defaults
+      # son `["gpu", "shader-nodes", "web"]`, y `web` arrastra `editor`: el
+      # motor entero dentro del wasm. Con `native` y solo `native`, el wasm es
+      # unicamente la capa de mensajes.
+      # ------------------------------------------------------------------
+      - name: Build the wrapper to wasm (native mode)
+        run: |
+          set -euo pipefail
+          cargo build --lib \
+            --package graphite-wasm-wrapper \
+            --target wasm32-unknown-unknown \
+            --release \
+            --no-default-features --features native
+
+          WASM=target/wasm32-unknown-unknown/release/graphite_wasm_wrapper.wasm
+          test -f "$WASM" || { echo "::error::no se ha compilado $WASM"; exit 1; }
+          echo "  wasm: $(stat -c%s "$WASM") bytes"
+
+      - name: Run wasm-bindgen and wasm-opt
+        run: |
+          set -euo pipefail
+          PKG=frontend/wrapper/pkg-native
+          mkdir -p "$PKG"
+          wasm-bindgen --target web \
+            --out-name "$WASM_PKG_NAME" \
+            --out-dir "$PKG" \
+            --no-demangle \
+            target/wasm32-unknown-unknown/release/$WASM_PKG_NAME.wasm
+          wasm-opt -O3 -g "$PKG/${WASM_PKG_NAME}_bg.wasm" -o "$PKG/${WASM_PKG_NAME}_bg.wasm"
+          echo "  pkg-native:"
+          ls -la "$PKG"
+          # El glue tiene que exponer las tres funciones de la frontera. Si el
+          # build pierde la feature `native`, esto avisa en vez de fallar luego
+          # en el movil con un error de JS.
+          for f in sendNativeMessage receiveNativeMessage initializeNativeCommunication; do
+            if grep -q "$f" "$PKG/${WASM_PKG_NAME}.js"; then
+              echo "  OK  el glue menciona $f"
+            else
+              echo "::error::el glue no menciona $f: el build no va en modo native"
+              exit 1
+            fi
+          done
+
+      - name: Build the frontend with vite (--mode native)
+        run: |
+          set -euo pipefail
+          cd frontend
+          npm ci --include=dev --prefer-offline --no-audit --no-fund
+          # `CARGO_TARGET_DIR` lo pone `cargo-run` porque vite lo lee para
+          # resolver rutas; se replica aqui.
+          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
+            node node_modules/vite/bin/vite.js build --mode native
+
+      - name: Verify the built frontend
+        run: |
+          set -euo pipefail
+          DIST=frontend/dist
+          test -d "$DIST" || { echo "::error::no hay $DIST"; exit 1; }
+          echo "=== contenido ==="
+          ls -la "$DIST"
+          echo "=== tamano total ==="
+          du -sh "$DIST"
+
+          test -f "$DIST/index.html" || { echo "::error::falta index.html"; exit 1; }
+
+          # El glue del wasm tiene que estar DENTRO del dist. En modo native
+          # vite lo copia desde wrapper/pkg-native/.
+          test -d "$DIST/wrapper/pkg-native" \
+            || { echo "::error::falta wrapper/pkg-native en el dist"; exit 1; }
+          ls -la "$DIST/wrapper/pkg-native"
+
+          # Y el motor NO debe estar dentro: si esta, es que se compiló en
+          # modo web y no nativo, que es el error caro (el motor dos veces,
+          # uno en wasm y otro en el .so, y el del wasm sin GPUnative).
+          echo "=== el wasm del frontend pesa: ==="
+          stat -c%s "$DIST"/wrapper/pkg-native/*_bg.wasm
+
+          SVG=$(find "$DIST" -name '*.svg' | wc -l)
+          echo "  SVG en el dist: $SVG"
+          test "$SVG" -gt 100 \
+            || { echo "::error::solo $SVG SVG: faltan los assets de marca"; exit 1; }
+
+          echo "VEREDICTO: el frontend esta compilado en modo nativo"
+
+      # Se sube el dist entero. El APK lo baja y lo mete en assets/.
+      - name: Package the dist
+        run: |
+          set -euo pipefail
+          tar -czf frontend-dist.tar.gz -C frontend/dist .
+          ls -la frontend-dist.tar.gz
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: graphite-mobile-frontend
+          path: frontend-dist.tar.gz
+          retention-days: 30
+          if-no-files-found: error
