@@ -94,7 +94,7 @@ jobs:
             android-sdk-${{ env.ANDROID_API_LEVEL }}-${{ env.ANDROID_BUILD_TOOLS_VERSION }}-
 
       # El nombre va entre comillas y sin ':' — sin comillas, YAML lo lee como un
-      # mapa y el workflow entero deja de ser válido. (Falló de verdad.)
+      # mapa y el workflow entero deja de ser valido.
       - name: "Install Android SDK (solo si falla la cache, pinned, SHA-256 verificado)"
         run: |
           if [ -d "$ANDROID_HOME/platforms/android-$ANDROID_API_LEVEL" ] \
@@ -200,11 +200,44 @@ jobs:
             echo "  OK  $sym"
           done
 
-          # La Activity también: sin ella el APK arranca y sale a la pantalla de
-          # inicio sin explicación.
-          unzip -l "$APK" | grep -q 'MainActivity' \
-            || { echo "::error::el APK no lleva MainActivity"; exit 1; }
-          echo "VEREDICTO: el APK lleva el motor y la Activity"
+          # La Activity también, y con la herramienta CORRECTA.
+          #
+          # OJO: `unzip -l | grep MainActivity` NO funciona, y no porque falte la
+          # Activity. Un APK no tiene ningún fichero llamado `MainActivity`: lleva
+          # `classes.dex`, `AndroidManifest.xml` y `lib/...`. La Activity vive
+          # dentro del DEX y del manifiesto. (Medido: este assert falló con el
+          # motor y los símbolos JNI dentro,oos por buscar un fichero que no
+          # existe.)
+          #
+          # `aapt2 dump` sí lee el manifiesto. Se comprueba además el paquete,
+          # que es lo que impide que dos APKs distintos se pisen.
+          #
+          # Sin `| grep -q`: con `set -o pipefail`, si grep encuentra y sale
+          # antes, el producerse queda con SIGPIPE y el pipeline se marca como
+          # fallido. Se guarda en una variable y se busca encima.
+          AAPT2="$ANDROID_HOME/build-tools/$ANDROID_BUILD_TOOLS_VERSION/aapt2"
+          test -x "$AAPT2" || { echo "::error::no existe $AAPT2"; exit 1; }
+
+          BADGING=$("$AAPT2" dump badging "$APK")
+          case "$BADGING" in
+            *"name='dev.graphite.mobile'"*) echo "  OK  paquete dev.graphite.mobile" ;;
+            *) echo "::error::paquete inesperado:"; echo "$BADGING" | head -3; exit 1 ;;
+          esac
+
+          MANIFEST=$("$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml)
+          case "$MANIFEST" in
+            *MainActivity*) echo "  OK  MainActivity en el manifiesto" ;;
+            *) echo "::error::el manifiesto NO declara MainActivity"; exit 1 ;;
+          esac
+          case "$BADGING" in
+            *"launchable-activity: name='dev.graphite.mobile.MainActivity'"*)
+              echo "  OK  launchable-activity" ;;
+            *) echo "::error::no hay launchable-activity (la app no abriria):"
+               echo "$BADGING" | grep -i 'launchable' || echo "  (no hay ninguna)"
+               exit 1 ;;
+          esac
+
+          echo "VEREDICTO: el APK lleva el motor y abre MainActivity"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
