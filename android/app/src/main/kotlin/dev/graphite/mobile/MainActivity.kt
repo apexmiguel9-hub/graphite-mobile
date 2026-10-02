@@ -1,11 +1,11 @@
 package dev.graphite.mobile
 
 import android.app.Activity
+import android.graphics.PixelFormat
 import android.os.Bundle
 import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
-import android.view.View
 
 /**
  * Activity mínima: una `SurfaceView` a pantalla completa y el motor pintando
