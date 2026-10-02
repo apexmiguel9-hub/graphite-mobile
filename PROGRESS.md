@@ -44,7 +44,36 @@ coste.
 
 ---
 
-## 2. El bug del triángulo negro
+## 2. Estado MEDIDO en el móvil
+
+Motorola G56, PowerVR B-Series BXM-8-256, vía **Vulkan**. Medido por logcat, no
+por foto.
+
+| hecho | valor |
+|---|---|
+| adaptador | `Vulkan / IntegratedGpu / PowerVR B-Series BXM-8-256` |
+| formato de superficie | `Rgba8UnormSrgb` (elegido, no el primero de la lista) |
+| alpha mode | `Inherit` — el único que ofrece ese driver |
+| `Editor::new` | 8,0 s |
+| documento | 21 respuestas, realimentadas al motor |
+| tamaño de superficie | `surfaceChanged -> 1080x2400` |
+| reconfiguración | `superficie reconfigured (0, 0) -> 1080x2400` |
+| viewport del motor | `viewport 1080x2400 actualizado` |
+| **frames** | **7.800+ seguidos a ~60 fps, sin parar** |
+| **`resizes`** | **0** — el swapchain cuadró siempre con lo configurado |
+| pánicos | 0 |
+| **triángulo negro** | **desaparecido** |
+
+**Resultado: gris, y `resizes = 0`.** Que es exactamente la casilla buena de la
+tabla de abajo: era el alfa premultiplicado, y el tamaño ya estaba bien.
+
+El lienzo es gris porque el documento está vacío: `run_node_graph()` renderiza
+pero no hay nada que dibujar, y el operador `over` deja ver el fondo. Es lo
+correcto. El escritorio tampoco pinta nada hasta que se carga el arte de demo.
+
+---
+
+## 3. El bug del triángulo negro
 
 **Síntoma:** un triángulo negro en mitad de la pantalla; el resto del lienzo se
 veía bien.
@@ -177,7 +206,7 @@ dieron falso.
 
 ---
 
-## 3. La UI: por qué todavía no hay
+## 4. La UI: por qué todavía no hay
 
 La capa de UI falta, y es la parte grande. La app actual es **solo el lienzo**.
 
@@ -201,7 +230,7 @@ lienzo que dibuja un triángulo negro no sirve para medir la UI.
 
 ---
 
-## 4. Compilar
+## 5. Compilar
 
 ```bash
 # El motor, para arm64-v8a (tarda ~10 min la primera vez)
@@ -217,15 +246,31 @@ minutos del motor.
 
 ---
 
-## 5. Estado
+## 6. Estado
 
 - [x] Motor compilado para aarch64 y verificado *dentro* del `.so` (el CI
       comprueba símbolos y tamaño, porque un `.so` sin motor pesa 4,95 MB y da
       verde igual).
 - [x] `SurfaceView` → `ANativeWindow` → superficie wgpu → blit.
 - [x] `Editor::new` + documento + `run_node_graph()`.
-- [ ] **Verificar en el móvil que el triángulo ha desaparecido** (log, no foto).
-- [ ] Tamaño de pantalla correcto tras el `run_node_graph` (no 1×1).
+- [x] **Triángulo negro desaparecido**, con `resizes = 0` y 7.800 frames a 60 fps.
+- [x] Tamaño de superficie correcto y el viewport del motor siguiendo al tamaño.
+- [ ] **Capa de UI** — el siguiente paso. Ver §4.
 - [ ] Gestos: traducir eventos de toque a `PointerMessage`.
-- [ ] Capa de UI (WebView o nativa).
 - [ ] Overlay del lienzo.
+
+### Los cuatro fallos que solo aparecieron midiendo en el móvil
+
+Ninguno se podía ver leyendo el código; los cuatro son **preguntarle cosas a
+wgpu sin preguntarle antes al dispositivo**, y los errores de wgpu son fatales
+por defecto, así que cada uno tumbaba la app en el arranque:
+
+| | Error que daba wgpu | Por qué |
+|---|---|---|
+| 1 | `Surface is not configured for presentation` | se pedía textura antes de que existiera tamaño |
+| 2 | `Requested alpha mode Opaque is not in ... [Inherit]` | ese driver solo admite `Inherit` |
+| 3 | `Failed to wait for GPU to come idle before reconfiguring` | había trabajo de render en vuelo |
+| 4 | — | el alfa premultiplicada, que no es de wgpu pero es del mismo género |
+
+Los tres primeros se arreglan preguntando a `surface.get_capabilities()` y
+esperando la GPU. Nada de eso es adivinar: ya está medido.
