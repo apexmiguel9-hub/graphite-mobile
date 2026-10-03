@@ -157,15 +157,27 @@ class MainActivity : Activity() {
                 WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
             )
 
-            // El rectángulo del recorte se registra aparte porque es lo que hay
-            // que COMPROBAR: si con este cambio el path tool sigue debajo de la
+            // Los insets del recorte se registran aparte porque son lo que hay
+            // que COMPROBAR: si con este cambio el Path Tool sigue debajo de la
             // cámara, el log dirá si Android no lo está reportando o si hay que
             // ir a por él de otra forma. Antes esto era una suposición.
-            val cutout = insets.displayCutout
+            //
+            // Se registra `getInsets(displayCutout())` y NO
+            // `insets.displayCutout.boundingRect()`. Este último no compila con
+            // la versión de `androidx.core` que resuelve el build:
+            //
+            //   MainActivity.kt:167:58 Unresolved reference 'boundingRect'
+            //   MainActivity.kt:168:77 Unresolved reference 'safeDrawing'
+            //
+            // MEDIDO en CI, y las dos cosas sobraban: eran solo para el log. El
+            // `Insets` del recorte ya dice si Android lo reporta y de cuánto es,
+            // que es exactamente la pregunta. Y `safeDrawing()` tampoco está, y
+            // tampoco hace falta: `systemBars() or displayCutout()` ya es todo
+            // lo que se quiere.
+            val recorte = insets.getInsets(WindowInsetsCompat.Type.displayCutout())
             Log.i(
                 TAG,
-                "insets: barras=$barras cutout=${cutout?.boundingRect()} " +
-                    "safeDrawing=${insets.getInsets(WindowInsetsCompat.Type.safeDrawing())} " +
+                "insets: barras=$barras recorte=$recorte " +
                     "-> padding ${izq(izquierda, barras.left)},${izq(base, barras.top)}," +
                     "${izq(derecha, barras.right)},${izq(abajo, barras.bottom)}",
             )

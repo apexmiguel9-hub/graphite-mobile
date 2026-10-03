@@ -288,7 +288,7 @@ pub extern "system" fn native_message_jni<'local>(
 /// payload de 328 KB.
 #[export_name = "Java_dev_graphite_mobile_MainActivityKt_nativeDrain"]
 pub extern "system" fn native_drain_jni<'local>(
-    mut env: JNIEnv<'local>,
+    env: JNIEnv<'local>,
     _class: JClass<'local>,
 ) -> jstring {
     let siguiente = {

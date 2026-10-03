@@ -290,7 +290,6 @@ impl Engine {
             messages_descartados: 0,
             escenas_overlays: 0,
             lienzo: None,
-            colocacion,
             descartados_por_tipo: std::collections::HashMap::new(),
             frontend_conectado: false,
         })

@@ -132,6 +132,60 @@ jobs:
       # no hay ningún `build-so` exitoso — aunque acabe de terminar uno bien. Aquí
       # el error se MUESTRA en vez de esconderse.
       # ------------------------------------------------------------------
+      # ------------------------------------------------------------------
+      # ESPERAR AL MOTOR, QUE FALTAVA.
+      #
+      # MEDIDO: `build-apk` se dispara con `workflow_run` de los DOS workflows, así
+      # que arranca en cuanto termina EL PRIMERO de los dos. Si ese es
+      # `build-frontend`, el motor sigue compilando y no hay `.so` que bajar:
+      #
+      #   e: MainActivity.kt:167:58 Unresolved reference 'boundingRect'
+      #   ##[error]Process completed with exit code 1.
+      #
+      # El `.so` que se baja en ese caso es el de un commit ANTERIOR, y el fallo
+      # no se ve en el móvil: el motor viejo funciona y la UI nueva parece
+      # rickrolled. Es el peor modo de fallo posible, y por eso aquí se espera.
+      #
+      # LA MISMA REGLA que el frontend, y por el mismo motivo: esperar solo si YA
+      # HAY un run en marcha para este commit. Si no hay ninguno, es que este
+      # commit no toca el motor, y el último `.so` exitoso es exactamente el que
+      # toca. Esperar a ciegas son 10 minutos de nada.
+      # ------------------------------------------------------------------
+      - name: Esperar al motor
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          REPO="$GITHUB_REPOSITORY"
+
+          ESPERA=0
+          LIMITE=$((25 * 60))
+          while :; do
+            ESTADOS=$(gh api "repos/$REPO/actions/workflows/build-so.yml/runs?per_page=100&branch=master" \
+              | jq -r --arg sha "$SHA" \
+                  '.workflow_runs[]
+                   | select(.head_sha==$sha)
+                   | "\(.status) \(.conclusion // "-") \(.id)"')
+            echo "$ESTADOS" | grep -q '^completed success ' && break
+            EN_MARCHA=$(echo "$ESTADOS" | grep -cE '^(pending|in_progress) ' || true)
+            if [ "$EN_MARCHA" -eq 0 ]; then
+              if [ -n "$ESTADOS" ]; then
+                echo "build-so para este commit termino SIN exito:"
+                echo "$ESTADOS"
+                echo "::warning::se usara el .so del ultimo commit que si compilo"
+              else
+                echo "Este commit no toca el motor; se usa el ultimo .so exitoso."
+              fi
+              break
+            fi
+            [ "$ESPERA" -eq 0 ] && echo "Hay $EN_MARCHA run(s) de motor para este commit; se espera."
+            [ "$ESPERA" -lt "$LIMITE" ] || break
+            sleep 30
+            ESPERA=$((ESPERA + 30))
+          done
+          echo "espera del motor: ${ESPERA}s"
+
       - name: Resolve .so run
         id: so
         env:
