@@ -192,8 +192,21 @@ class WebUI {
         // `evaluateJavascript` no hace peticion ninguna: el codigo viaja dentro
         // del propio JavaScript evaluado. Por eso el shim va EMBEBIDO como
         // constante y no se carga como fichero.
+        //
+        // MEDIDO: si el marcador `SHIM_PLACEHOLDER` llega intacto aqui, lo que
+        // se evalua es JavaScript que dice
+        //     Uncaught ReferenceError: SHIM_PLACEHOLDER is not defined
+        // y el shim no se instala. Pasa cuando `build-frontend` no incrusto el
+        // shim pero `build-apk` uso un `WebUI.kt` viejo. Se comprueba aqui, en
+        // el movil, para que el fallo diga algo util en vez de un
+        // ReferenceError de JavaScript.
+        if (SHIM_JS.contains("SHIM_PLACEHOLDER")) {
+            Log.e(TAG, "BUG: el shim NO fue incrustado; SHIM_JS es el marcador")
+            Log.e(TAG, "build-frontend no se ejecuto, o se uso un WebUI.kt viejo")
+            return
+        }
         view.evaluateJavascript(SHIM_JS, null)
-        Log.i(TAG, "shim inyectado (embebido, sin fetch)")
+        Log.i(TAG, "shim inyectado (embebido, ${SHIM_JS.length} bytes)")
     }
 
     /**

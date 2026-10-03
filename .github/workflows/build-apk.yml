@@ -28,6 +28,18 @@ on:
       # compilaba el APK, y tocaba los commits siguientes en un orden que ya no
       # correspondía con el código.
       - 'android/**'
+      # `build-frontend.yml` entra porque el shim viaja INCRUSTADO dentro de
+      # `WebUI.kt`, y lo incrusta `build-frontend` sustituyendo un marcador.
+      #
+      # MEDIDO: sin esto, cambiar `build-frontend.yml` o `embed-shim.py` no
+      # disparaba el APK, y `build-apk` se bajaba un `WebUI.kt` con el marcador
+      # intacto. El sintoma en el movil es
+      #
+      #   Uncaught ReferenceError: SHIM_PLACEHOLDER is not defined
+      #
+      # Es decir, el `.kt` que compila es correcto, el `.apk` es valido y el
+      # unico fallo es que el shim no se instala. Verde en CI, negro en el movil.
+      - '.github/workflows/build-frontend.yml'
       - '.github/workflows/build-apk.yml'
   # Cuando el motor se recompila, el APK se reconstruye con el `.so` nuevo.
   workflow_run:
@@ -217,6 +229,33 @@ jobs:
               || { echo "::error::falta $f en los assets de la UI"; exit 1; }
             echo "  OK  $f"
           done
+
+          # ------------------------------------------------------------------
+          # EL SHIM ESTA DENTRO DEL KOTLIN.
+          #
+          # MEDIDO: el `.apk` puede compilar, ser valido y aun asi no llevar el
+          # shim. Pasa cuando este workflow corre con un `WebUI.kt` viejo, con el
+          # marcador `SHIM_PLACEHOLDER` sin sustituir: el Kotlin compila (es una
+          # cadena normal), el APK se genera, y en el movil lo que se evalua es
+          #
+          #     Uncaught ReferenceError: SHIM_PLACEHOLDER is not defined
+          #
+          # La UI no aparece y no hay ningun error de compilacion. Se comprueba
+          # el artefacto FINAL, que es lo que va a instalar el movil.
+          # ------------------------------------------------------------------
+          DELIM=$(python3 -c "print(chr(34) * 3 + 'SHIM_PLACEHOLDER' + chr(34) * 3)")
+          grep -qF "$DELIM" "$DEST/bridge.js" 2>/dev/null && true
+          KT=android/app/src/main/kotlin/dev/graphite/mobile/WebUI.kt
+          if grep -qF "$DELIM" "$KT"; then
+            echo "::error::WebUI.kt tiene el marcador sin sustituir: el shim NO va dentro"
+            echo "::error::El APK compilaria y no tendria shim. Corre build-frontend primero."
+            exit 1
+          fi
+          for g in 'window.sendNativeMessage' 'window.initializeNativeCommunication'; do
+            grep -q "$g" "$KT" \
+              || { echo "::error::el shim incrustado no define $g"; exit 1; }
+          done
+          echo "  OK  el shim va incrustado en el Kotlin"
           SZ=$(stat -c%s "$DEST/bundle.js")
           echo "  bundle.js: $SZ bytes"
           test "$SZ" -gt 100000 \
