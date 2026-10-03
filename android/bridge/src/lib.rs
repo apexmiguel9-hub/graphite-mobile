@@ -166,6 +166,15 @@ pub struct Engine {
     /// Es el estado silencioso por excelencia, asi que necesita contador.
     pub grafo_sin_correr: u32,
 
+    /// Veces que el grafo corrio pero SIN textura nueva. Demand-driven: es el
+    /// estado invisible por excelencia, porque `last_texture` sigue siendo
+    /// valido y no hay ningun error. Ver `frame`.
+    pub grafo_sin_textura: u32,
+
+    /// Veces que el grafo devovio una textura de verdad. Si esto NO sube cuando
+    /// se dibuja algo, el grafo no se esta invalidando.
+    pub grafo_con_textura: u32,
+
     /// Ultimo tamaño de la textura que devolvio el grafo, para detectar cambios.
     pub ultimo_tamano_textura: (u32, u32),
 
@@ -297,6 +306,8 @@ impl Engine {
             messages_descartados: 0,
             escenas_overlays: 0,
             grafo_sin_correr: 0,
+            grafo_sin_textura: 0,
+            grafo_con_textura: 0,
             ultimo_tamano_textura: (0, 0),
             lienzo: None,
             descartados_por_tipo: std::collections::HashMap::new(),
@@ -526,31 +537,48 @@ impl Engine {
             );
         }
 
-        // El viewport del motor va con la superficie. Si se queda atrás, el motor
-        // renderiza al tamaño viejo y el compositor lo escala.
+        // ------------------------------------------------------------------
+        // NO SE MANDA `ViewportMessage::Update` DESDE AQUI. Y ESTA ES LA PARTE
+        // IMPORTANTE: HAY DOS ESCRITORES DEL MISMO DATO, Y ESTE ESTA MAL.
         //
-        // El tamaño sale de `RenderConfig.viewport: Footprint`
-        // (node-graph/libraries/application-io/src/lib.rs) y lo manda
-        // `ViewportMessage::Update`.
+        // MEDIDO. Lo mandaba asi:
         //
-        // En el escritorio lo manda el frontend. Aquí lo mandamos nosotros al
-        // arrancar, para que el lienzo tenga el tamaño correcto desde el primer
-        // frame y no haya un parpadeo de 1x1. Cuando el frontend esté montado,
-        // él lo mandará con las medidas reales del panel de dibujo, que es lo
-        // que hay que acabar usando: el viewport del MOTOR no es la pantalla
-        // entera, es el rectángulo donde va el lienzo, que en la UI real es más
-        // pequeño que la pantalla porque hay paneles alrededor.
-        self.wrapper.dispatch(DesktopWrapperMessage::FromWeb(Box::new(
-            Message::Viewport(ViewportMessage::Update {
-                x: 0.,
-                y: 0.,
-                width: width as f64,
-                height: height as f64,
-                // 1.0 = un pixel de pantalla por unidad de documento.
-                scale: 1.,
-            }),
-        )));
-        log::info!("[{}] viewport {}x{} actualizado", TAG, width, height);
+        //     ViewportMessage::Update { x: 0., y: 0., width: 2168, height: 1021,
+        //                               scale: 1.0 }
+        //
+        // y el frontend, al MISMO TIEMPO, desde
+        // `frontend/src/utility-functions/viewports.ts:53`:
+        //
+        //     editor.updateViewport(274, 255, 1336, 668, 2.4375)
+        //
+        // Los dos escriben el MISMO `ViewportState.bounds`. No son dos vistas del
+        // mismo dato: son dos escrituras, y gana la que llega el ultimo. El
+        // nuestro pone el tamano de la VENTANA entera, la posicion en (0,0) y
+        // `scale: 1.0` — es decir, exactamente lo que el frontend vino a
+        // corregir, porque el lienzo es un subrectangulo con paneles alrededor.
+        //
+        // MEDIDO que el del frontend SIEMPRE llega, y por tanto el nuestro sobra.
+        // La prueba es indirecta pero no admite otra lectura: el editor emite
+        // `FrontendMessage::UpdateViewportPhysicalBounds` **en respuesta** a
+        // `ViewportMessage::Update` (`viewport_message_handler.rs:42`), y
+        // nosotros RECIBIMOS ese mensaje —llega, y lo estamos usando para colocar
+        // la textura del blit—. Si lo recibimos, el `ViewportMessage::Update`
+        // del frontend tuvo que llegar antes.
+        //
+        // O sea: el del frontend es el unico que llega, y el nuestro solo puede
+        // coronar un `Update` equivocado encima. Por eso se quita.
+        //
+        // Y el comentario de antes, que decia "lo mandamos nosotros al arrancar
+        // para que no haya un parpadeo de 1x1", era una suposicion: el
+        // `ResizeObserver` del frontend (`viewports.ts:20`) corre en su `onMount`,
+        // que es antes del primer frame util. El parpadeo de 1x1 que se veia era
+        // otra cosa.
+        log::info!(
+            "[{}] superficie {}x{}; el viewport del motor NO se toca aqui: lo manda el frontend",
+            TAG,
+            width,
+            height
+        );
     }
 
     /// **Un mensaje del frontend**, ya en bytes.
@@ -1112,6 +1140,34 @@ impl Engine {
             // silencioso por excelencia: no es un error, el grafo simplemente no
             // produce nada, y sin este log es indistinguible de "no ha pintado".
             let (corrio, t) = resultado;
+            // `HasRun(None)` NO es lo mismo que `HasRun(Some(textura))`, y es la
+            // distincion que faltaba. MEDIDO: `notrun=0` era verdad y no servia
+            // para nada, porque `notrun` solo contaba `NotRun` y el grafo es
+            // *demand-driven*: `HasRun(None)` significa "he corrido, pero no hay
+            // nada nuevo que dibujar", y eso con una textura VIEJA en
+            // `last_texture` es EXACTAMENTE el sintoma de "no se ve nada de lo que
+            // dibujo".
+            //
+            //   NotRun       -> no he corrido
+            //   HasRun(None) -> he corrido, no hay nada nuevo      <- el sospechoso
+            //   HasRun(Some) -> he corrido, aqui tienes la textura
+            //
+            // Los dos primeros se cuentan aparte, porque solo el tercero cambia
+            // lo que se ve en pantalla.
+            match (&t, corrio) {
+                (None, true) => {
+                    self.grafo_sin_textura += 1;
+                    if self.frames <= 3 || self.frames % 300 == 0 {
+                        log::warn!(
+                            "[{}] el grafo CORRE pero no devuelve textura nueva ({} veces). last_texture sigue siendo la de antes.",
+                            TAG,
+                            self.grafo_sin_textura
+                        );
+                    }
+                }
+                (Some(_), _) => self.grafo_con_textura += 1,
+                _ => {}
+            }
             if !corrio {
                 self.grafo_sin_correr += 1;
                 if self.frames <= 3 || self.frames % 60 == 0 {
@@ -1322,7 +1378,7 @@ impl Engine {
         format!(
             "frames={} lienzo={} swapchain_configurado={:?} resizes={} \
              frontend={} msj_in={} msj_descartados={} overlays={} \
-             tex={:?} notrun={} lienzo_css={:?}",
+             tex={:?} sin_textura={} con_textura={} notrun={} lienzo_css={:?}",
             self.frames,
             self.rendered,
             self.configured,
@@ -1332,6 +1388,8 @@ impl Engine {
             self.messages_descartados,
             self.escenas_overlays,
             self.ultimo_tamano_textura,
+            self.grafo_sin_textura,
+            self.grafo_con_textura,
             self.grafo_sin_correr,
             self.lienzo.map(|l| (l.x as i64, l.y as i64, l.width as i64, l.height as i64)),
         )
