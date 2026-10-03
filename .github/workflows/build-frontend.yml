@@ -497,18 +497,39 @@ jobs:
             cp -r frontend/dist/demo-artwork "$OUT/demo-artwork"
           fi
 
-          # `dist/assets/` NO se copia entero, a proposito.
+          # ------------------------------------------------------------------
+          # `dist/assets/`: EL WASM Y LAS MINIATURAS. No entero, pero tampoco
+          # solo el wasm.
           #
-          # MEDIDO: al hacerlo aparecia
+          # MEDIDO: se copiaba SOLO el wasm, y las miniaturas del arte de demo
+          # quedaron fuera. El bundle las pide por ruta ABSOLUTA:
+          #
+          #     ThumbnailChangingSeasons: `/assets/thumbnail-changing-seasons-<hash>.png`
+          #
+          # MEDIDO en el APK: CERO ficheros `thumbnail*`. Siete miniaturas que
+          # el frontend usa en el menu de bienvenida, desaparecidas en silencio.
+          # Ni un error: la ruta simplemente da 404 y sale un hueco.
+          #
+          # Que las rutas sean absolutas no es casualidad: es la MISMA cosa que
+          # hace que el bundle tenga que ser `type="module"`. Con
+          # `WebViewAssetLoader` la app sirve por
+          # `https://appassets.androidplatform.net/assets/`, y una ruta absoluta
+          # resuelve exactamente ahi.
+          #
+          # Se copian las miniaturas con su nombre con hash. Los ICONOS van
+          # inlineados por el alias `?raw` de vite y no hacen falta.
+          # ------------------------------------------------------------------
+          MINIATURAS=$(find frontend/dist/assets -name 'thumbnail-*.png' | wc -l)
+          echo "  miniaturas en dist/assets: $MINIATURAS"
+          test "$MINIATURAS" -gt 0 \
+            || { echo "::error::no hay miniaturas; el menu de welcome saldra vacio"; exit 1; }
+          cp frontend/dist/assets/thumbnail-*.png "$OUT/assets/"
+
+          # Y el resto de `assets/` NO se copia. Al hacerlo aparecia
           #   assets/assets/graphite_wasm_wrapper_bg-<hash>.wasm
-          # o sea una COPIA del wasm con el nombre viejo, en un directorio que no
-          # usa nadie. El check de `build-apk` lo detecto y fallo, que es
-          # exactamente lo que un check debe hacer, pero el fichero era basura
-          # desde el principio.
-          #
-          # Lo unico que hace falta de `assets/` es el wasm, y ya esta en
-          # `$OUT/assets/glue.wasm`. Los iconos y las fuentes van INLINEADOS en
-          # `bundle.js` por los alias de vite, asi que no se piden por separado.
+          # una COPIA del wasm con el nombre viejo, en un directorio que no usa
+          # nadie. El check de `build-apk` lo detecto, que es lo que debe hacer
+          # un check, pero el fichero era basura desde el principio.
 
           echo "=== contenido empaquetado ==="
           ls -la "$OUT"

@@ -10,6 +10,8 @@ import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.WebViewAssetLoader
+import androidx.webkit.WebViewAssetLoader.AssetsPathHandler
 
 /**
  * La UI: el frontend de Graphite (Svelte) dentro de un WebView.
@@ -90,6 +92,32 @@ class WebUI {
         }
 
         webViewClient = object : WebViewClient() {
+            /**
+             * Aqui, y no en `onPageFinished`.
+             *
+             * MEDIDO: inyectando el shim en `onPageFinished`, el frontend
+             * arrancaba y el wasm no encontraba `sendNativeMessage`:
+             *
+             *   Uncaught TypeError: window.sendNativeMessage is not a function
+             *
+             * El motivo es el orden: un `<script type="module">` se evalua como
+             * modulo, y el modulo se evalua ANTES de que la pagina termine de
+             * cargar. `onPageFinished` va despues. El shim tiene que existir
+             * cuando el wasm llame a `Reflect::get(global, "sendNativeMessage")`,
+             * y ese momento es durante la evaluacion del modulo.
+             *
+             * `onPageStarted` salta con la pagina todavia vacia, que es justo lo
+             * que hace falta: el shim se instala y luego se evalua el bundle.
+             *
+             * Con `WebViewAssetLoader` esto es menos delicado, porque el modulo
+             * se descarga de un origen real y tarda unas cuantas iteraciones del
+             * event loop. Pero el orden sigue siendo el correcto y no depende de
+             * ese tiempo.
+             */
+            override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
+                Log.i(TAG, "empieza a cargar: $url")
+                inyectarShim(view)
+            }
             // ------------------------------------------------------------------
             // LA FIRMA REAL, LEIDA DEL ANDROID.JAR, NO SUPUESTA.
             //
@@ -122,10 +150,14 @@ class WebUI {
 
             override fun onPageFinished(view: WebView, url: String) {
                 Log.i(TAG, "el frontend ha terminado de cargar: $url")
-                // El shim se inyecta ANTES de que corra el wasm, no despues. Si
-                // se inyectara despues, el wasm ya habria intentado llamar a
-                // `sendNativeMessage` y no lo habria encontrado.
-                inyectarShim(view)
+                // OJO: no se inyecta aqui. `onPageFinished` salta DESPUES de que los
+                // modulos se hayan evaluado, y el bundle es un modulo: cuando
+                // esto corre, el wasm ya ha intentado llamar a
+                // `sendNativeMessage` y no lo ha encontrado.
+                //
+                // El shim se inyecta en `onPageStarted`, con la pagina todavia
+                // vacia. Ver `onPageStarted`.
+                Log.i(TAG, "la pagina ha terminado de cargar: $url")
                 cargado = true
             }
         }
@@ -164,50 +196,50 @@ class WebUI {
 
         addJavascriptInterface(GraphiteNative(), "GraphiteNative")
 
-        // El shim va en la carga de la página, no después: el wasm se ejecuta
-        // durante la carga y necesita los globales ya definidos.
-        loadUrl("file:///android_asset/web/index.html")
+        // ------------------------------------------------------------------
+        // SERVIR POR UN ORIGEN REAL, NO POR `file://`.
+        //
+        // MEDIDO: con `file://`, el bundle queda bloqueado y el frontend no
+        // arranca nunca.
+        //
+        //   Access to script at 'file:///android_asset/web/bundle.js' from
+        //   origin 'null' has been blocked by CORS policy: Cross origin requests
+        //   are only supported for protocol schemes: chrome, chrome-untrusted,
+        //   data, http, https
+        //
+        // La causa NO es el atributo del script. Es que `bundle.js` se declara
+        // `type="module"`, y **un módulo ES una petición**: con esquema `file:`
+        // el origen es `null`, y el navegador no permite peticiones
+        // cross-origin contra origen nulo. Un `<script>` clásico pasaría, pero el
+        // bundle necesita ser módulo por el `import.meta` con el que localiza su
+        // propio `.wasm`.
+        //
+        // `WebViewAssetLoader` mapea `/assets/` a los assets del APK y lo sirve
+        // por `https://appassets.androidplatform.net`: `https` de verdad, con su
+        // propio origen. Los módulos y el `fetch` funcionan sin tocar una línea
+        // del frontend.
+        //
+        // El prefijo `/assets/web/` importa: el bundle pide `/assets/glue.wasm` y
+        // las miniaturas por `/assets/thumbnail-*.png`, rutas ABSOLUTAS, y
+        // resuelven a `https://appassets.androidplatform.net/assets/glue.wasm`.
+        // El path handler mapea `/assets/` → `assets/` del APK, asi que el
+        // `assets/` del APK tiene que contener lo que el bundle pide. Por eso el
+        // `.wasm` y las miniaturas van en `assets/web/assets/`.
+        //
+        // MEDIDO: `WebViewAssetLoader` está en `androidx.webkit`, NO en el
+        // framework. Comprobado en el `android.jar` de API 36: no hay ninguna
+        // clase `AssetLoader`. De ahí la dependencia.
+        // ------------------------------------------------------------------
+        assetLoader = WebViewAssetLoader.Builder()
+            .addPathHandler("/assets/", AssetsPathHandler(this))
+            .build()
+
+        baseUrl = "$DOMINIO$PREFIJO"
+        Log.i(TAG, "los assets se sirven por $baseUrl (no file://)")
+
+        loadUrl("${baseUrl}index.html")
     }
 
-    /**
-     * Inyecta [bridge.js] en la página.
-     *
-     * Se lee de los assets y se evalúa en la página, porque el fichero tiene
-     * que estar disponible para el `fetch` inicial pero no debe estar dentro
-     * del bundle de vite.
-     */
-    private fun inyectarShim(view: WebView) {
-        // MEDIDO: cargar el shim con `document.createElement('script')` y un
-        // `src` a `file://` da dos fallos, y el log los enseña los dos:
-        //
-        //   1. net::ERR_FAILED en bridge.js
-        //   2. Access to script at 'file://...' from origin 'null' has been
-        //      blocked by CORS policy: ... only supported for protocol schemes:
-        //      chrome, data, http, https
-        //
-        // El segundo es el importante: una pagina `file://` tiene origen `null`,
-        // y `fetch`/`import` de otro fichero de disco son peticiones
-        // cross-origin contra origen nulo, que el navegador bloquea.
-        //
-        // `evaluateJavascript` no hace peticion ninguna: el codigo viaja dentro
-        // del propio JavaScript evaluado. Por eso el shim va EMBEBIDO como
-        // constante y no se carga como fichero.
-        //
-        // MEDIDO: si el marcador `SHIM_PLACEHOLDER` llega intacto aqui, lo que
-        // se evalua es JavaScript que dice
-        //     Uncaught ReferenceError: SHIM_PLACEHOLDER is not defined
-        // y el shim no se instala. Pasa cuando `build-frontend` no incrusto el
-        // shim pero `build-apk` uso un `WebUI.kt` viejo. Se comprueba aqui, en
-        // el movil, para que el fallo diga algo util en vez de un
-        // ReferenceError de JavaScript.
-        if (SHIM_JS.contains("SHIM_PLACEHOLDER")) {
-            Log.e(TAG, "BUG: el shim NO fue incrustado; SHIM_JS es el marcador")
-            Log.e(TAG, "build-frontend no se ejecuto, o se uso un WebUI.kt viejo")
-            return
-        }
-        view.evaluateJavascript(SHIM_JS, null)
-        Log.i(TAG, "shim inyectado (embebido, ${SHIM_JS.length} bytes)")
-    }
 
     /**
      * Entrega al frontend un mensaje del nativo, en base64.
@@ -281,6 +313,18 @@ class WebUI {
 
     companion object {
         const val TAG = "GRAPHITE"
+
+        /**
+         * Origen real para los assets. `https` de verdad, no `file:`.
+         *
+         * MEDIDO: `WebViewAssetLoader` esta en `androidx.webkit`, NO en el
+         * framework — comprobado en el `android.jar` de API 36, donde no hay
+         * ninguna clase `AssetLoader`. De ahi la dependencia.
+         */
+        const val DOMINIO = "https://appassets.androidplatform.net"
+
+        /** Donde vive la UI dentro de los assets. */
+        const val PREFIJO = "/assets/web/"
 
         /**
          * El shim, embebido en el binario y no cargado como fichero.

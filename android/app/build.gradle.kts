@@ -41,15 +41,24 @@ android {
 }
 
 // ------------------------------------------------------------------
-// SIN DEPENDENCIAS. Sigue siendo una decisión.
+// UNA DEPENDENCIA: `androidx.webkit`. Ni Compose ni AndroidX, a propósito.
 //
-// La UI es el frontend de Graphite dentro de un WebView, y `android.webkit` es
-// del framework, no de AndroidX. Así que sigue sin make needing nada.
+// `WebViewAssetLoader` esta en `androidx.webkit`, no en el framework. MEDIDO:
+// en el `android.jar` de API 36 no hay ninguna clase `AssetLoader`. Y hace
+// falta:
 //
-// Ni Compose ni AndroidX a propósito: si la pantalla sale rara, hay que poder
-// decir si es el motor, el WebView, o la composición de las dos capas. Eso es
-// mucho más fácil cuando no hay un framework de UI en medio. Cuando haya que
-// portar algo a nativo, se añade entonces.
+//   Access to script at 'file:///android_asset/web/bundle.js' from origin 'null'
+//   has been blocked by CORS policy
+//
+// `bundle.js` es un modulo (`type="module"`, por el `import.meta` con el que
+// localiza su `.wasm`), y un modulo ES una peticion. Con `file:` el origen es
+// `null` y no se permite. `WebViewAssetLoader` sirve los assets por
+// `https://appassets.androidplatform.net`, que es un origen real.
+//
+// Sigue sin haber Compose ni el resto de AndroidX: si la pantalla sale rara, hay
+// que poder decir si es el motor, el WebView, o la composicion de las dos capas,
+// y eso es mucho mas facil cuando no hay un framework de UI en medio.
 // ------------------------------------------------------------------
 dependencies {
+    implementation("androidx.webkit:webkit:1.12.1")
 }
