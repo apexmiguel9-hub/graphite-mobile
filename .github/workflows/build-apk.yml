@@ -190,12 +190,27 @@ jobs:
           gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" \
             -n graphite-mobile-frontend \
             -D /tmp/fe
-          tar -xzf /tmp/fe/frontend-for-android.tar.gz -C "$DEST"
+
+          # MEDIDO: `gh run download` descarga el CONTENIDO del artefacto, no un
+          # zip que lo contenga. El `.tar.gz` que sube el workflow llega ya
+          # descomprimido, con su nombre dentro. Intentar `/tmp/fe/<nombre>.tar.gz`
+          # falla con "Cannot open: No such file or directory".
+          #
+          # Se busca por patron en vez de por nombre exacto, para no volver a
+          # atar este paso al nombre que le ponga el otro workflow.
+          TARBALL=$(find /tmp/fe -name '*.tar.gz' | head -1)
+          if [ -z "$TARBALL" ]; then
+            echo "::error::no hay ningun .tar.gz en /tmp/fe. Contenido:"
+            ls -la /tmp/fe
+            exit 1
+          fi
+          echo "  tarball: $TARBALL ($(stat -c%s "$TARBALL") bytes)"
+          tar -xzf "$TARBALL" -C "$DEST"
           echo "=== assets/web ==="
           ls -la "$DEST"
           # El shim y el index.html TIENEN que estar: sin el shim el wasm no
           # encuentra `sendNativeMessage` y la UI no arranca. Verde igual.
-          for f in index.html bridge.js bundle.js glue.wasm; do
+          for f in index.html bridge.js bundle.js assets/glue.wasm; do
             test -f "$DEST/$f" \
               || { echo "::error::falta $f en los assets de la UI"; exit 1; }
             echo "  OK  $f"
@@ -205,8 +220,25 @@ jobs:
           test "$SZ" -gt 100000 \
             || { echo "::error::bundle.js de $SZ bytes: no es la app"; exit 1; }
           # Y el glue tiene que citar el nombre del wasm, que se ha renombrado.
+          # MEDIDO: la referencia al wasm dentro del bundle queda como
+          # `/assets/glue.wasm`, con ruta ABSOLUTA. Con `file://` eso significa
+          # la raiz del sistema de ficheros, y el wasm no se carga: el frontend
+          # se queda esperando el modulo.
+          #
+          # Por eso el wasm va en `assets/web/assets/glue.wasm`, no en
+          # `assets/web/glue.wasm`: para que la ruta absoluta coincida.
+          #
+          # Es el mismo motivo por el que el frontend se sirve por
+          # `file:///android_asset/web/index.html` y no con un `WebViewAssetLoader`
+          # que sirviese desde `https://appassets.androidplatform.net`: el
+          # frontend construye rutas con `/` delante.
           grep -q 'glue.wasm' "$DEST/bundle.js" \
             || { echo "::error::el bundle no cita glue.wasm: el wasm no cargara"; exit 1; }
+          REF=$(grep -o '[^"'"'"']*glue\.wasm' "$DEST/bundle.js" | head -1)
+          echo "  el bundle cita el wasm como: $REF"
+          test -f "$DEST/assets/glue.wasm" \
+            || { echo "::error::el bundle cita '$REF' pero no existe assets/glue.wasm"; exit 1; }
+          echo "  OK  assets/glue.wasm existe, la ruta absoluta resolvera"
 
       - name: Download .so
         env:

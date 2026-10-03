@@ -376,17 +376,33 @@ jobs:
             sed -i "s|\"${CSSNAME}\"|\"style.css\"|g" "$OUT/bundle.js"
           fi
 
-          # El wasm del frontend. El nombre con hash va DENTRO del glue JS.
+          # ------------------------------------------------------------------
+          # EL WASM, Y POR QUÉ VA EN `assets/` Y NO EN LA RAÍZ.
+          #
+          # MEDIDO: dentro del bundle, la referencia al wasm queda como
+          #
+          #     /assets/glue.wasm
+          #
+          # con ruta ABSOLUTA, no `glue.wasm`. Con `file://` eso resuelve a la
+          # raiz del sistema de ficheros, y el wasm no se carga nunca: el
+          # frontend se queda esperando el modulo y no aparece nada.
+          #
+          # Por eso va en `$OUT/assets/glue.wasm`. La app sirve el frontend desde
+          # `file:///android_asset/web/`, así que `/assets/...` cae dentro de
+          # `android_asset/web/assets/...` y coincide.
+          #
+          # El nombre con hash va dentro del glue JS, así que hay que reescribir
+          # las dos formas que aparecen.
+          # ------------------------------------------------------------------
           WASM=$(find frontend/dist/assets -name 'graphite_wasm_wrapper_bg-*.wasm' | head -1)
           test -n "$WASM" || { echo "::error::no hay wasm del frontend"; exit 1; }
           echo "  wasm: $(basename "$WASM")"
-          cp "$WASM" "$OUT/glue.wasm"
+          mkdir -p "$OUT/assets"
+          cp "$WASM" "$OUT/assets/glue.wasm"
           WASMBASE=$(basename "$WASM")
+          sed -i "s|assets/${WASMBASE}|assets/glue.wasm|g" "$OUT/bundle.js"
           sed -i "s|${WASMBASE}|glue.wasm|g" "$OUT/bundle.js"
-          sed -i "s|assets/${WASMBASE}|glue.wasm|g" "$OUT/bundle.js"
 
-          # El glue que genera wasm-bindgen tambien se importa por su ruta.
-          # En el bundle va incluido, pero por si acaso se copia tambien.
           cp frontend/dist/index.html "$OUT/index.dist.html"
 
           # El shim: NO esta en el dist (lo escribe este repo, vite no lo
@@ -407,12 +423,23 @@ jobs:
           echo "=== total ==="
           du -sh "$OUT"
 
-          # El bundle tiene que seguir citando al glue, que es como se carga
-          # el wasm. Si esta comprobacion falla, el wasm no se encontrara y el
-          # frontend se quedara en negro.
-          echo "=== comprobacion: el bundle cita el wasm ==="
-          grep -o 'glue\.wasm' "$OUT/bundle.js" | head -1 \
-            || { echo "::error::el bundle no cita glue.wasm: el wasm no se podra cargar"; exit 1; }
+          # El bundle tiene que citar el wasm en la ruta por la que realmente
+          # se va a servir, y el fichero tiene que estar ahi. Con `file://`, una
+          # ruta absoluta que no existe es un fallo silencioso: el frontend se
+          # queda en negro sin error visible.
+          echo "=== comprobacion: el wasm se podra cargar ==="
+          REF=$(grep -o '[^"'"'"']*glue\.wasm' "$OUT/bundle.js" | head -1 || true)
+          if [ -z "$REF" ]; then
+            echo "::error::el bundle ya no cita glue.wasm: se rompio el sed"
+            exit 1
+          fi
+          echo "  el bundle lo cita como: $REF"
+          case "$REF" in
+            /*) test -f "$OUT$REF" \
+                   || { echo "::error::cita '$REF' pero no existe $OUT$REF"; exit 1; }
+                echo "  OK  ruta absoluta, existe $OUT$REF" ;;
+            *)  echo "  (ruta relativa, el navegador la resuelve contra el index)" ;;
+          esac
 
           tar -czf frontend-for-android.tar.gz -C "$OUT" .
           ls -la frontend-for-android.tar.gz
