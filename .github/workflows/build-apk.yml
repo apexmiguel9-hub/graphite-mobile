@@ -18,14 +18,16 @@ on:
   push:
     branches: [master]
     paths:
-      - 'android/app/**'
-      - 'android/build.gradle.kts'
-      - 'android/settings.gradle.kts'
-      - 'android/gradle.properties'
-      - 'android/gradle/**'
-      - 'android/gradlew'
-      - 'android/gradlew.bat'
-      - 'android/scripts/**'
+      # `android/**` entero, y no una lista fichero a fichero. Una lista de
+      # `paths` siempre se queda corta: lo que no esté en ella no dispara el
+      # workflow, y eso no falla —el workflow simplemente no corre y el "verde"
+      # que se ve es el de un commit anterior.
+      #
+      # MEDIDO: `assets/web/bridge.js` no lo cubría el filtro, porque se añadió
+      # el fichero antes que la regla. Arreglar el shim daba un commit que no
+      # compilaba el APK, y tocaba los commits siguientes en un orden que ya no
+      # correspondía con el código.
+      - 'android/**'
       - '.github/workflows/build-apk.yml'
   # Cuando el motor se recompila, el APK se reconstruye con el `.so` nuevo.
   workflow_run:
