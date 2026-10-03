@@ -138,6 +138,10 @@ pub struct Engine {
     /// Solo el log: sirve para distinguir "el frontend no manda escenas" de
     /// "llegan y no se pintan". Ver `on_native_message`.
     pub escenas_overlays: u32,
+    /// Tipos de `DesktopFrontendMessage` descartados en el último lote, y cuántos
+    /// de cada uno. Se vacía en cada tanda y se loguea: solo sirve para el
+    /// diagnóstico, no es estado. Ver `nombre_de`.
+    pub descartados_por_tipo: std::collections::HashMap<&'static str, u32>,
     /// Si el frontend ya ha pedido conexión.
     pub frontend_conectado: bool,
 }
@@ -255,8 +259,106 @@ impl Engine {
             messages_in: 0,
             messages_descartados: 0,
             escenas_overlays: 0,
+            descartados_por_tipo: std::collections::HashMap::new(),
             frontend_conectado: false,
         })
+    }
+
+    /// Nombre de un `DesktopFrontendMessage` que todavía no se maneja.
+    ///
+    /// MEDIDO, y por qué existe esto: `msj_descartados` iba a 24 y no decía
+    /// **ni uno**. Un contador sin nombres no dice nada: no se sabe si son 24
+    /// mensajes de lo mismo o uno de cada cosa, y por tanto no se sabe si
+    /// alguno explica que el lienzo no dibuje.
+    ///
+    /// Los nombres son explícitos, no automáticos. Un `std::any::type_name` o
+    /// similar daría el nombre del *tipo*, no el de la variante, que es
+    /// justo lo que se quiere saber. Y al estar la función al lado del `match`
+    /// que descarta, añadir una variante al enum obliga a pasar por aquí: el
+    /// compilador avisa, y eso es justo lo que se quiere.
+    ///
+    /// `Window*`, `Restart` y `LoadThirdPartyLicenses` caen en el resto a
+    /// propósito: no hacen falta en un móvil y agruparlos deja el log legible.
+    fn nombre_de(m: &DesktopFrontendMessage) -> &'static str {
+        match m {
+            DesktopFrontendMessage::UpdateViewportPhysicalBounds { .. } => "UpdateViewportPhysicalBounds",
+            DesktopFrontendMessage::UpdateUIScale { .. } => "UpdateUIScale",
+            DesktopFrontendMessage::WindowUpdateDirectInput { .. } => "WindowUpdateDirectInput",
+            DesktopFrontendMessage::UpdateMenu { .. } => "UpdateMenu",
+            DesktopFrontendMessage::OpenFileDialog { .. } => "OpenFileDialog",
+            DesktopFrontendMessage::SaveFileDialog { .. } => "SaveFileDialog",
+            DesktopFrontendMessage::WriteFile { .. } => "WriteFile",
+            DesktopFrontendMessage::OpenUrl(_) => "OpenUrl",
+            DesktopFrontendMessage::OpenLaunchDocuments => "OpenLaunchDocuments",
+            DesktopFrontendMessage::PersistenceWritePreferences { .. } => "PersistenceWritePreferences",
+            DesktopFrontendMessage::PersistenceLoadPreferences => "PersistenceLoadPreferences",
+            DesktopFrontendMessage::PersistenceWriteState { .. } => "PersistenceWriteState",
+            DesktopFrontendMessage::PersistenceReadState => "PersistenceReadState",
+            DesktopFrontendMessage::ClipboardRead => "ClipboardRead",
+            DesktopFrontendMessage::ClipboardWrite { .. } => "ClipboardWrite",
+            DesktopFrontendMessage::PointerLock => "PointerLock",
+            DesktopFrontendMessage::WindowFullscreen => "WindowFullscreen",
+            DesktopFrontendMessage::WindowFocus => "WindowFocus",
+            _ => "resto (ventana de escritorio: Window*, Restart, LoadThirdPartyLicenses)",
+        }
+    }
+
+    /// Reengancha una superficie nueva **sin tocar el motor**.
+    ///
+    /// MEDIDO, y esto es lo que arregla el cierre al volver del segundo plano.
+    ///
+    ///     signal 6 (SIGABRT), en el hilo principal
+    ///     #13 Java_dev_graphite_mobile_MainActivityKt_nativeBoot+584
+    ///     #19 dev.graphite.mobile.MainActivity$callback$1.surfaceCreated+0
+    ///     #22 android.view.SurfaceView.updateSurface
+    ///     #23 android.view.SurfaceView.setWindowStopped
+    ///     #24 android.view.SurfaceView.surfaceCreated
+    ///
+    /// Android vuelve a llamar `surfaceCreated` al reanudar, con una
+    /// `ANativeWindow` NUEVA. `nativeBoot` arrancaba un motor entero cada vez, y
+    /// al asignar el segundo sobre el primero se destruía el `DesktopWrapper` del
+    /// primero: su `Editor` con su `WgpuExecutor` y su `Device` de wgpu, en el
+    /// hilo principal y en mitad de un frame. De ahí el `abort`.
+    ///
+    /// No hace falta arrancar un motor nuevo: la `Surface` de wgpu se puede
+    /// reemplazar sin tocar el `Device`, el `Queue` ni el `Editor`, porque la
+    /// superficie nueva usa la MISMA instancia. Se reutilizan los dos, y solo se
+    /// rehace la superficie y su configuración.
+    ///
+    /// Lo que NO se puede hacer es no rehacerla: `wgpu::Surface` envuelve la
+    /// `ANativeWindow` en el momento de crearse, y no hay forma de cambiarle la
+    /// ventana después. Android destruye la superficie al minimizar, así que la
+    /// antigua queda inservible.
+    pub fn reenganchar_superficie(
+        &mut self,
+        env: *mut jni::sys::JNIEnv,
+        surface_job: jni::sys::jobject,
+    ) -> Result<(), String> {
+        log::info!("[{}] reenganchando la superficie del motor", TAG);
+
+        // El adaptador sale del contexto por `Deref`, que es lo mismo que hace
+        // `gpu()`: `wgpu_sync::Adapter` no se convierte a `wgpu::Adapter`, se
+        // clona a través del `Deref`.
+        let adapter: wgpu::Adapter = (*self.context.adapter).clone();
+        let instancia: wgpu::Instance = (*self.context.instance).clone();
+
+        self.surface = Self::surface(env, surface_job, instancia)?;
+        self.surface_format = Self::pick_format(&self.surface, &adapter);
+        self.alpha_mode = Self::pick_alpha_mode(&self.surface, &adapter);
+
+        // La superficie nueva no está configurada, y `surfaceCreated` todavía no
+        // sabe el tamaño. Se marca como sin configurar y se espera a que llegue
+        // `surfaceChanged`, que siempre va detrás.
+        //
+        // No se "recuerda" el tamaño viejo a propósito: si `surfaceChanged` no
+        // llegara, el siguiente frame presentaría a una superficie sin
+        // configurar, y los errores de wgpu son FATALES por defecto.
+        self.configured = (0, 0);
+        log::info!(
+            "[{}] superficie reenganchada; configurara al llegar el tamano",
+            TAG
+        );
+        Ok(())
     }
 
     /// **El tamaño de la ventana cambió.** Reconfigura superficie y viewport.
@@ -415,17 +517,24 @@ impl Engine {
                 DesktopFrontendMessage::UpdateOverlays(_) => {
                     self.escenas_overlays += 1;
                 }
-                _ => otros += 1,
+                ref otro => {
+                    otros += 1;
+                    *self
+                        .descartados_por_tipo
+                        .entry(Self::nombre_de(otro))
+                        .or_insert(0) += 1;
+                }
             }
         }
 
         if otros > 0 {
-            log::info!(
-                "[{}] {} DesktopFrontendMessage de escritorio SIN manejar todavia \
-                 (dialogos de fichero, menu, portapapeles, persistencia)",
-                TAG,
-                otros
-            );
+            // MEDIDO: «cuántos» no sirve de nada. Hay que ver «cuáles»: el
+            // contador se agregaba en 24 y no decia ni uno. El nombre sale de
+            // `nombre_de`, y sale UNO POR TIPO y no uno por mensaje: son
+            // decenas por segundo en operación normal y llenan el log.
+            for (nombre, n) in self.descartados_por_tipo.drain() {
+                log::warn!("[{}] DESCARTADO x{}: {}", TAG, n, nombre);
+            }
             self.messages_descartados += otros as u32;
         }
 

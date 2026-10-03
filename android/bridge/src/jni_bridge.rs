@@ -48,6 +48,67 @@ pub extern "system" fn native_boot_jni<'local>(
         }
     };
 
+    // ------------------------------------------------------------------
+    // ¿SEGUNDA VEZ? ENTONCES SOLO LA SUPERFICIE.
+    //
+    // MEDIDO, y esto es el crash de volver del segundo plano:
+    //
+    //     signal 6 (SIGABRT), en el hilo principal
+    //     #13 Java_dev_graphite_mobile_MainActivityKt_nativeBoot+584
+    //     #19 MainActivity$callback$1.surfaceCreated+0
+    //     #24 android.view.SurfaceView.surfaceCreated
+    //     #23 android.view.SurfaceView.setWindowStopped
+    //
+    // Android vuelve a llamar `surfaceCreated` al reanudar, con una
+    // `ANativeWindow` nueva. Arrancar el motor otra vez machacaba el primero:
+    // al escribir el segundo sobre el primero se destruía su `DesktopWrapper`,
+    // con el `Editor` y el `Device` de wgpu dentro, en el hilo principal y en
+    // mitad de un frame. De ahí el `abort`.
+    //
+    // El motor se arranca UNA vez. Después solo se rehace la superficie, que es
+    // lo único que Android destruye: `wgpu::Surface` envuelve la
+    // `ANativeWindow` al crearse y no hay forma de cambiársela después.
+    // ------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // ¿SEGUNDA VEZ? ENTONCES SOLO LA SUPERFICIE.
+    //
+    // MEDIDO, y esto es el crash de volver del segundo plano:
+    //
+    //     signal 6 (SIGABRT), en el hilo principal
+    //     #13 Java_dev_graphite_mobile_MainActivityKt_nativeBoot+584
+    //     #19 MainActivity$callback$1.surfaceCreated+0
+    //     #24 android.view.SurfaceView.surfaceCreated
+    //     #23 android.view.SurfaceView.setWindowStopped
+    //
+    // Android vuelve a llamar `surfaceCreated` al reanudar, con una
+    // `ANativeWindow` nueva. Arrancar el motor otra vez machacaba el primero:
+    // al escribir el segundo sobre el primero se destruía su `DesktopWrapper`,
+    // con el `Editor` y el `Device` de wgpu dentro, en el hilo principal y en
+    // mitad de un frame. De ahí el `abort`.
+    //
+    // El motor se arranca UNA vez. Después solo se rehace la superficie, que es
+    // lo único que Android destruye: `wgpu::Surface` envuelve la
+    // `ANativeWindow` al crearse y no hay forma de cambiársela después.
+    //
+    // Se devuelve antes de nada, y con informe propio: el motor NO se vuelve a
+    // sacar del `Mutex` ni a meter. Un `take()` aquí lo dejaría en `None` y el
+    // siguiente mensaje del frontend se encontraría sin motor.
+    // ------------------------------------------------------------------
+    if ENGINE.lock().unwrap().is_some() {
+        log::info!("[{}] el motor ya estaba arrancado: solo se reengancha la superficie", TAG);
+        let mut guard = ENGINE.lock().unwrap();
+        let engine = guard.as_mut().expect("se acaba de comprobar que hay motor");
+        if let Err(msg) = engine.reenganchar_superficie(env.get_raw(), global.as_raw()) {
+            log::error!("[{}] no se pudo reenganchar la superficie: {}", TAG, msg);
+            drop(global);
+            return string(&mut env, format!("FALLO\n{msg}"));
+        }
+        let estado = engine.status();
+        drop(guard);
+        drop(global);
+        return string(&mut env, format!("superficie reenganchada — {estado}"));
+    }
+
     let mut engine = match Engine::boot(env.get_raw(), global.as_raw()) {
         Ok(e) => e,
         Err(msg) => {

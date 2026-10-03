@@ -7,6 +7,8 @@ import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.widget.FrameLayout
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 
 /**
  * Activity mínima: una `SurfaceView` a pantalla completa y el motor pintando
@@ -90,6 +92,58 @@ class MainActivity : Activity() {
         )
 
         setContentView(root)
+        aplicarInsets(root)
+    }
+
+    /**
+     * Que la app no se meta debajo de las barras del sistema.
+     *
+     * MEDIDO: la barra de título de Graphite se dibujaba en `y=0`, debajo de
+     * las notificaciones, y el panel de la derecha quedaba cortado por la barra
+     * de navegación.
+     *
+     * Y no es que esté mal puesto: **`targetSdk = 36` obliga a edge-to-edge**
+     * desde Android 15. No hay forma de desactivarlo (`setDecorFitsSystemWindows`
+     * está en deprecated y el framework lo ignora), y dejar el `WebView` a
+     * `MATCH_PARENT` hace que su CSS llegue al borde de la pantalla.
+     *
+     * Hay dos formas de arreglarlo y solo una es la buena:
+     *
+     * - **Bajar la escala un 10%.** NO es la solución. `UpdateUIScale` escala
+     *   widgets y fuentes; no mueve la barra de título, así que seguiría debajo
+     *   del reloj. Además agranda todo lo que hay que tocar.
+     * - **Respetar los insets.** Es lo que hace cualquier app Android: el
+     *   contenido va entre la barra de estado y la de navegación, y ni una ni
+     *   otra se solapa.
+     *
+     * Se aplica padding al `FrameLayout` raíz, no a las vistas: los dos hijos
+     * (la `SurfaceView` del motor y el WebView de la UI) son `MATCH_PARENT`, así
+     * que con el padding los dos empiezan debajo de la barra de estado y acaban
+     * antes de la de navegación. Es lo que hace falta para que el hueco del
+     * lienzo y la `SurfaceView` sigan coincidiendo: si solo se corrigiera el
+     * WebView, el motor pintaría debajo de la barra y se vería el borde.
+     *
+     * `systemBars()` y no `systemGestures()`: la barra de navegación del G56 es
+     * de botones y cuenta como barra del sistema. Con `systemGestures()` el
+     * margen de abajo salía 0 y el contenido seguía debajo.
+     */
+    private fun aplicarInsets(root: FrameLayout) {
+        val base = root.paddingTop
+        val derecha = root.paddingRight
+        val abajo = root.paddingBottom
+        val izquierda = root.paddingLeft
+        ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
+            val barras = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            v.setPadding(
+                izquierda + barras.left,
+                base + barras.top,
+                derecha + barras.right,
+                abajo + barras.bottom,
+            )
+            Log.i(TAG, "insets del sistema: $barras -> padding ${v.paddingLeft},${v.paddingTop},${v.paddingRight},${v.paddingBottom}")
+            insets
+        }
+        ViewCompat.requestApplyInsets(root)
     }
 
     /**

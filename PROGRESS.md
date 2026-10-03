@@ -311,7 +311,133 @@ siguiente.
 
 ---
 
-## 5. La UI: por qué WebView y no reescribir
+## 5. Tres bugs de la primera versión con la UI
+
+La interfaz apareció y ya se podía usar. Lo que salió en los primeros cinco
+minutos, todo medido en el móvil.
+
+### 5.1 El cierre al volver del segundo plano
+
+**Síntoma:** minimizar y reabrir. A veces el lienzo aparecía y luego, a los
+pocos segundos, la app se cerraba sola.
+
+**Cómo se mide un crash nativo en Android:** `adb logcat -b crash`, no
+`-s GRAPHITE`. El tombstone va a otro buffer y fuera del tag propio.
+
+```
+signal 6 (SIGABRT), en el hilo principal
+#13 Java_dev_graphite_mobile_MainActivityKt_nativeBoot+584
+#19 dev.graphite.mobile.MainActivity$callback$1.surfaceCreated+0
+#22 android.view.SurfaceView.updateSurface
+#23 android.view.SurfaceView.setWindowStopped
+#24 android.view.SurfaceView.surfaceCreated
+```
+
+El-frame lo dice: no es una ventana liberada, es **`nativeBoot` llamado dos
+veces**. Android vuelve a disparar `surfaceCreated` al reanudar, y arrancar el
+motor otra vez machaca el primero — al escribir el segundo sobre el primero se
+destruía su `DesktopWrapper`, con el `Editor` y el `Device` de wgpu dentro, en el
+hilo principal y en mitad de un frame.
+
+**El arreglo:** el motor se arranca **una vez**. A partir de ahí, `surfaceCreated`
+solo rehace la superficie (`Engine::reenganchar_superficie`). Hace falta porque
+`wgpu::Surface` envuelve la `ANativeWindow` al crearse y no hay forma de
+cambiarle la ventana después; pero la `Surface` se puede reemplazar sin tocar el
+`Device`, el `Queue` ni el `Editor`, porque la superficie nueva usa la misma
+instancia.
+
+Las dos cosas que hay que tener juntas:
+
+- La superficie nueva **no** puede conservar el tamaño viejo. Se marca como «sin
+  configurar» y espera a `surfaceChanged`. Si `surfaceChanged` no llegara, el
+  siguiente frame presentaría a una superficie sin configurar, y los errores de
+  wgpu son fatales.
+- El motor no se vuelve a sacar del `Mutex` ni a meter. Un `take()` ahí lo dejaría
+  en `None` y el siguiente mensaje del frontend se encontraría sin motor.
+
+### 5.2 La UI llega a las barras del sistema
+
+**Síntoma:** la barra de título de Graphite se dibujaba debajo de las
+notificaciones, y el panel de la derecha quedaba cortado por la barra de
+navegación.
+
+**No es un error de colocación: es `targetSdk = 36`.** Desde Android 15 la
+ventana va de edge-to-edge **obligatoriamente**. `setDecorFitsSystemWindows` está
+deprecado y el framework lo ignora, así que con el `WebView` a `MATCH_PARENT` su
+CSS llega al borde de la pantalla.
+
+Hay dos maneras de "arreglarlo" y solo una es la buena:
+
+| | | |
+|---|---|---|
+| Bajar la escala un 10% | `UpdateUIScale` escala widgets y fuentes, **no mueve la barra de título** | Se seguiría solapando, y se agranda todo lo que hay que tocar |
+| Respetar los insets | Lo que hace cualquier app Android: el contenido va entre las dos barras | Correcto |
+
+Se aplica padding al `FrameLayout` raíz, no a las vistas: los dos hijos (la
+`SurfaceView` del motor y el WebView) son `MATCH_PARENT`, así que los dos empiezan
+debajo de la barra de estado y acaban antes de la de navegación. Si solo se
+corrigiera el WebView, el motor seguiría pintando debajo de la barra y se vería el
+borde, y además el hueco del lienzo dejaría de coincidir con la `SurfaceView`.
+
+`systemBars()` y no `systemGestures()`: la barra de navegación del G56 es de
+botones y cuenta como barra del sistema; con `systemGestures()` el margen de abajo
+sale 0.
+
+### 5.3 Los gestos: quién los maneja
+
+**La UI web. Enteramente. Rust no ve el dedo ni una vez.**
+
+| Quién | Qué hace |
+|---|---|
+| Chromium (`WebView`) | Convierte el toque en eventos `pointer*` del DOM |
+| `frontend/src/managers/input.ts:42-44` | Los escucha **en `window`** |
+| `frontend/src/utility-functions/input.ts:137,169` | Los traduce a `editor.onMouseMove/onMouseDown(x, y, buttons, mods)` |
+| wasm → JNI | `EditorMessage::Input(...)` |
+
+Medido, sin recompilar: se synthesize un arrastre real por DevTools
+(`Input.dispatchTouchEvent`) y lo que llega al DOM es exactamente lo que
+produciría un ratón:
+
+```
+pointerdown  target=viewport-transparent  dentroDeViewport=true  buttons=1  button=0
+pointermove  dentroDeViewport=true  buttons=1   (x5)
+pointerup    dentroDeViewport=true  button=0
+```
+
+Y `elementFromPoint` en el centro del lienzo devuelve `DIV.viewport-transparent`,
+que **está dentro de `[data-viewport]`**, así que el filtro `isTargetingCanvas` de
+`onPointerDown` pasa.
+
+**Los gestos llegan enteros.** Por eso los menús funcionan, y por eso un arrastre
+crea la layer pero no dibuja: el comando llega al motor y lo ejecuta, lo que falta
+es el marco del lienzo. Eso es `UpdateViewportPhysicalBounds`, que hoy se
+descarta, y es lo siguiente.
+
+Los 24 `msj_descartados` se cuentan por tipo ahora (`nombre_de` en `lib.rs`):
+«cuántos» no decía nada, había que ver «cuáles».
+
+### 5.4 Compilar Rust en local: no se puede
+
+Intentado, y documentado para que no se vuelva a intentar:
+
+| Arreglo | Estado |
+|---|---|
+| `libgcc_s.so` no existe | Stub en `/tmp/stub` |
+| Bionic no tiene `__errno_location`, `bcmp`, `gnu_get_libc_version`, `__xpg_strerror_r` | Shim de 4 funciones en C. **Enlaza.** |
+| Bionic exige el segmento TLS alineado a 64, Rust lo deja en 8 | **Sin arreglo.** `-Wl,-z,max-page-size` no toca la cabecera PT_TLS. |
+
+Los build scripts llegan a ejecutarse y mueren ahí. No hay compilador local: **CI
+es el único que compila**, y por eso `cargo check` en local no es una atajo, es
+una pérdida de tiempo.
+
+Un hallazgo deambio que sí es real: el `Cargo.lock` estaba **desactualizado** —
+le faltaba `graphite-desktop-wrapper` en `graphite-android-bridge`, una
+dependencia que ya estaba declarada. CI no usa `--locked`, por eso llevaba tiempo
+sin dar señales.
+
+---
+
+## 6. La UI: por qué WebView y no reescribir
 
 La capa de UI es la parte grande. El frontend de Graphite es una aplicación
 Svelte de 15.101 líneas. Hay dos caminos:
@@ -337,7 +463,7 @@ solo cablea el callback: `editor_wrapper.rs:87`).
 
 ---
 
-## 6. Herramientas de diagnóstico
+## 7. Herramientas de diagnóstico
 
 Todo lo de este proyecto se ha medido en el móvil. Estas son las herramientas,
 en orden de utilidad:
@@ -360,7 +486,7 @@ python3 android/scripts/cdp.py --shot out.png
 
 ---
 
-## 7. Compilar
+## 8. Compilar
 
 ```bash
 # El motor, para arm64-v8a (tarda ~10 min la primera vez)
@@ -376,7 +502,7 @@ minutos del motor.
 
 ---
 
-## 8. Estado
+## 9. Estado
 
 - [x] Motor compilado para aarch64 y verificado *dentro* del `.so` (el CI
       comprueba símbolos y tamaño, porque un `.so` sin motor pesa 4,95 MB y da

@@ -61,4 +61,24 @@ android {
 // ------------------------------------------------------------------
 dependencies {
     implementation("androidx.webkit:webkit:1.12.1")
+
+    // ------------------------------------------------------------------
+    // `androidx.core`, y SOLO por los insets del sistema.
+    //
+    // Se declara explícitamente aunque `androidx.webkit` ya lo traiga de forma
+    // transitiva, porque se usa directamente. Pedirle a una dependencia
+    // transitiva algo que se usa en código propio es la forma de que un día
+    // falle sin que se haya tocado nada: cambia `webkit` y se va.
+    //
+    // Es la única excepción a lo de no meter AndroidX de UI, y no mete ningún
+    // framework de UI: `ViewCompat` y `WindowInsetsCompat` son envolturas de
+    // la API del framework. Sirven para lo mismo en API 26 y en API 36, que con
+    // `View.setOnApplyWindowInsetsListener` a pelo habría que bifurcar a mano.
+    //
+    // MEDIDO: con `targetSdk = 36` la ventana va de edge-to-edge SIEMPRE, desde
+    // Android 15, y no hay forma de desactivarlo. La barra de título de Graphite
+    // se dibujaba debajo de las notificaciones y el panel derecho se cortaba con
+    // la barra de navegación. Ver `MainActivity.aplicarInsets`.
+    // ------------------------------------------------------------------
+    implementation("androidx.core:core-ktx:1.13.1")
 }
