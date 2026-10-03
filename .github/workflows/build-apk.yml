@@ -41,9 +41,14 @@ on:
       # unico fallo es que el shim no se instala. Verde en CI, negro en el movil.
       - '.github/workflows/build-frontend.yml'
       - '.github/workflows/build-apk.yml'
-  # Cuando el motor se recompila, el APK se reconstruye con el `.so` nuevo.
+  # Cuando el motor o el frontend se recompilan, el APK se reconstruye con los
+  # artefactos nuevos.
+  #
+  # MEDIDO: faltaba el frontend aqui. `build-apk` se disparaba cuando terminaba
+  # `build-so`, pero no cuando terminaba `build-frontend`. Un commit que solo
+  # tocaba el frontend no producia ningun APK: habia que Lanzarlo a mano.
   workflow_run:
-    workflows: ["Graphite Android SO"]
+    workflows: ["Graphite Android SO", "Graphite Mobile frontend"]
     types: [completed]
   workflow_dispatch:
     inputs:
