@@ -133,18 +133,55 @@ class MainActivity : Activity() {
         val abajo = root.paddingBottom
         val izquierda = root.paddingLeft
         ViewCompat.setOnApplyWindowInsetsListener(root) { v, insets ->
-            val barras = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            // ------------------------------------------------------------------
+            // `displayCutout()` ADEMÁS de `systemBars()`, y no es opcional.
+            //
+            // MEDIDO: con solo `systemBars()` los insets salían
+            //
+            //     Insets{left=0, top=115, right=117, bottom=0}
+            //
+            // con `left = 0` en horizontal, y en una foto del móvil se ve que la
+            // cámara SÍ está ahí: el Path Tool y los círculos de color quedan
+            // debajo del agujero.
+            //
+            // La causa es que el recorte de la pantalla es un TIPO de inset
+            // aparte, no parte de las barras del sistema. `systemBars()` son las
+            // barras; el notch es un agujero en la pantalla, y son cosas
+            // distintas. Pedir solo las barras da 0 donde hay un recorte.
+            //
+            // La `|` es importantísima y por eso se escribe y no se suma en
+            // código: los dos tipos se solapan (la barra de estado también es
+            // zona de cutout), y sumar las dos vez contaría el margen dos veces.
+            // ------------------------------------------------------------------
+            val barras = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+            )
+
+            // El rectángulo del recorte se registra aparte porque es lo que hay
+            // que COMPROBAR: si con este cambio el path tool sigue debajo de la
+            // cámara, el log dirá si Android no lo está reportando o si hay que
+            // ir a por él de otra forma. Antes esto era una suposición.
+            val cutout = insets.displayCutout
+            Log.i(
+                TAG,
+                "insets: barras=$barras cutout=${cutout?.boundingRect()} " +
+                    "safeDrawing=${insets.getInsets(WindowInsetsCompat.Type.safeDrawing())} " +
+                    "-> padding ${izq(izquierda, barras.left)},${izq(base, barras.top)}," +
+                    "${izq(derecha, barras.right)},${izq(abajo, barras.bottom)}",
+            )
             v.setPadding(
                 izquierda + barras.left,
                 base + barras.top,
                 derecha + barras.right,
                 abajo + barras.bottom,
             )
-            Log.i(TAG, "insets del sistema: $barras -> padding ${v.paddingLeft},${v.paddingTop},${v.paddingRight},${v.paddingBottom}")
             insets
         }
         ViewCompat.requestApplyInsets(root)
     }
+
+    /** `max`, sin `kotlin.math.max`, para no importar por un número. */
+    private fun izq(base: Int, extra: Int): Int = if (base > extra) base else extra
 
     /**
      * Saca de la cola de Rust lo que haya pendiente y lo entrega al frontend.

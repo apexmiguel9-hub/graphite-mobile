@@ -63,6 +63,20 @@ fn fase(nombre: &str) {
     log::info!("[{}] FASE t={}ms {}", TAG, t, nombre);
 }
 
+/// El rectángulo del lienzo dentro de la ventana, en **píxeles físicos**.
+///
+/// Lo emite el editor ya convertido (`to_physical()`), no el frontend: quien lo
+/// envía es `editor/src/messages/viewport/viewport_message_handler.rs:42`. El
+/// frontend manda píxeles CSS en `ViewportMessage::Update`, y el editor los
+/// multiplica por la escala que le dio (`viewports.ts:53`).
+#[derive(Debug, Clone, Copy)]
+pub struct Lienzo {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 /// Estado vivo entre llamadas JNI. Una sola instancia, detrás de un `Mutex`.
 pub struct Engine {
     /// Device/queue/instance/adapter **del motor**. Se crean aquí y se le pasan
@@ -134,6 +148,20 @@ pub struct Engine {
     /// `DesktopFrontendMessage` de escritorio que aún no se manejan. Ver
     /// `on_native_message`.
     pub messages_descartados: u32,
+    /// Dónde está el lienzo dentro de la ventana, y cuánto se escala.
+    ///
+    /// MEDIDO, y es lo que faltaba para que se viera lo que se dibuja. Antes se
+    /// descartaba y el blit estiraba la textura del motor a toda la ventana, con
+    /// lo que el lienzo se dibujaba desplazado y escalado: la capa se creaba (el
+    /// comando llegaba) pero no se veía nada.
+    ///
+    /// Se recalcula en cuanto cambia el tamaño de la superficie —un giro lo
+    /// cambia— y no solo cuando llega el mensaje.
+    pub lienzo: Option<Lienzo>,
+
+    /// Buffer con `offset` y `scale` para el blit. Ver `blit.wgsl`.
+    pub colocacion: wgpu::Buffer,
+
     /// Escenas de Vello de overlays que han llegado y NO se rasterizan todavía.
     /// Solo el log: sirve para distinguir "el frontend no manda escenas" de
     /// "llegan y no se pintan". Ver `on_native_message`.
@@ -225,7 +253,8 @@ impl Engine {
         // 5. Blit
         // ------------------------------------------------------------------
         fase("6 blit");
-        let (pipeline, sampler, fallback) = Self::blit(&context.device, &context.queue, surface_format);
+        let (pipeline, sampler, fallback, colocacion) =
+            Self::blit(&context.device, &context.queue, surface_format);
 
         // El viewport todavía no se manda: no hay tamaño. Lo mandará
         // `on_surface_size` en cuanto la ventana lo tenga. Mandarlo con 0 es lo
@@ -251,6 +280,7 @@ impl Engine {
             pipeline,
             sampler,
             fallback,
+            colocacion,
             last_texture: None,
             report,
             frames: 0,
@@ -259,6 +289,8 @@ impl Engine {
             messages_in: 0,
             messages_descartados: 0,
             escenas_overlays: 0,
+            lienzo: None,
+            colocacion,
             descartados_por_tipo: std::collections::HashMap::new(),
             frontend_conectado: false,
         })
@@ -354,11 +386,67 @@ impl Engine {
         // llegara, el siguiente frame presentaría a una superficie sin
         // configurar, y los errores de wgpu son FATALES por defecto.
         self.configured = (0, 0);
+        // Vuelve a "lienzo a pantalla completa" hasta que llegue el tamaño.
+        self.actualizar_colocacion();
         log::info!(
             "[{}] superficie reenganchada; configurara al llegar el tamano",
             TAG
         );
         Ok(())
+    }
+
+    /// Escribe en el uniform dónde está el lienzo, a partir del tamaño de la
+    /// superficie.
+    ///
+    /// La aritmética es la de `desktop/src/app.rs:285-295`, y es la misma porque
+    /// las unidades también lo son: el mensaje ya viene en píxeles físicos
+    /// (`to_physical()`) y la superficie se mide en píxeles físicos.
+    ///
+    /// `offset` es la fracción de la ventana donde empieza el lienzo, y `scale`
+    /// es su inversa en esa dimensión: `scale = ventana / lienzo`. Así
+    /// `(uv - offset) * scale` vale 0..1 exactamente dentro del lienzo, que es lo
+    /// que el fragment shader necesita para mapear la textura.
+    ///
+    /// Con `scale = 1, offset = 0` el lienzo ocupa toda la ventana: es lo que
+    /// había antes, y el valor inicial cuando todavía no ha llegado el mensaje.
+    pub fn actualizar_colocacion(&mut self) {
+        let (sw, sh) = self.configured;
+        let (offset_x, offset_y, scale_x, scale_y) = match self.lienzo {
+            Some(l) if sw > 0 && sh > 0 && l.width > 0.0 && l.height > 0.0 => (
+                l.x / sw as f64,
+                l.y / sh as f64,
+                sw as f64 / l.width,
+                sh as f64 / l.height,
+            ),
+            _ => (0.0, 0.0, 1.0, 1.0),
+        };
+
+        // Se escribe SOLO cuando cambia algo: al llegar el mensaje del frontend y
+        // al cambiar el tamaño de la superficie. Son 16 bytes y no vale la pena
+        // encolarlos 60 veces por segundo para que no cambie nada.
+        self.context.queue.write_buffer(
+            &self.colocacion,
+            0,
+            bytemuck::cast_slice(&[
+                offset_x as f32,
+                offset_y as f32,
+                scale_x as f32,
+                scale_y as f32,
+            ]),
+        );
+
+        if self.frames <= 3 {
+            log::info!(
+                "[{}] colocacion del lienzo: offset=({:.4}, {:.4}) scale=({:.4}, {:.4}) lienzo={:?} superficie={:?}",
+                TAG,
+                offset_x,
+                offset_y,
+                scale_x,
+                scale_y,
+                self.lienzo,
+                self.configured
+            );
+        }
     }
 
     /// **El tamaño de la ventana cambió.** Reconfigura superficie y viewport.
@@ -418,6 +506,9 @@ impl Engine {
                 },
             );
             self.configured = (width, height);
+            // La colocación del lienzo depende del tamaño de la superficie, asi
+            // que un giro la invalida aunque el frontend no mande nada nuevo.
+            self.actualizar_colocacion();
             log::info!(
                 "[{}] superficie reconfigured {:?} -> {}x{}",
                 TAG,
@@ -516,6 +607,38 @@ impl Engine {
                 DesktopFrontendMessage::ToWeb(mut ms) => para_web.append(&mut ms),
                 DesktopFrontendMessage::UpdateOverlays(_) => {
                     self.escenas_overlays += 1;
+                }
+                DesktopFrontendMessage::UpdateViewportPhysicalBounds {
+                    x,
+                    y,
+                    width,
+                    height,
+                } => {
+                    // ------------------------------------------------------------------
+                    // DÓNDE ESTÁ EL LIENZO. Este mensaje era el que faltaba.
+                    //
+                    // MEDIDO: se descartaba (`DESCARTADO x2: UpdateViewportPhysicalBounds`)
+                    // y sin él el blit estiraba la textura del motor a toda la
+                    // ventana. Resultado: la capa se creaba y no se veía nada.
+                    // Los TRES modos de render (SVG, pixel outline, normal) fallaban
+                    // igual, y eso es lo que descarta que sea un problema de
+                    // pintado: es geometría, y por eso no lo arregla cambiar de
+                    // shader.
+                    //
+                    // Las unidades YA SON FÍSICAS, y no por casualidad:
+                    // `editor/src/messages/viewport/viewport_message_handler.rs:42`
+                    // hace `self.bounds().to_physical()` antes de emitirlo. Así que
+                    // aquí no hay que convertir nada y la aritmética de
+                    // `desktop/src/app.rs:285` aplica tal cual.
+                    //
+                    // Y el origen coincide: el motor mide desde el (0,0) de la
+                    // superficie, y el (0,0) CSS del WebView es la misma esquina
+                    // porque los dos estánemblies llevan el mismo padding de
+                    // insets. Si algún día dejan de compartirlo, el `offset` de
+                    // abajo es lo primero que se rompe.
+                    // ------------------------------------------------------------------
+                    self.lienzo = Some(Lienzo { x, y, width, height });
+                    self.actualizar_colocacion();
                 }
                 ref otro => {
                     otros += 1;
@@ -771,7 +894,7 @@ impl Engine {
         // hace `QueueGuard`). Se usan sus métodos directos.
         queue: &wgpu_sync::Queue,
         format: wgpu::TextureFormat,
-    ) -> (wgpu::RenderPipeline, wgpu::Sampler, wgpu::TextureView) {
+    ) -> (wgpu::RenderPipeline, wgpu::Sampler, wgpu::TextureView, wgpu::Buffer) {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("blit"),
             source: wgpu::ShaderSource::Wgsl(BLIT_WGSL.into()),
@@ -786,6 +909,19 @@ impl Engine {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
+                    },
+                    count: None,
+                },
+                // MEDIDO: hace falta un TERCER binding. Ver `blit.wgsl`: sin el
+                // offset y la escala del lienzo, la textura se estiraba a toda la
+                // ventana y lo que se dibujaba caia fuera de la vista.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
@@ -874,7 +1010,27 @@ impl Engine {
             },
         );
         let view = tex.create_view(&Default::default());
-        (pipeline, sampler, view)
+
+        // ------------------------------------------------------------------
+        // EL UNIFORM DE COLOCACIÓN DEL LIENZO.
+        //
+        // `vec2f` + `vec2f`: 16 bytes. Es lo que lee `blit.wgsl` para saber qué
+        // parte de la ventana es el lienzo y qué escala aplicar.
+        //
+        // Se inicializa a "todo la ventana" (offset 0, scale 1), que es lo
+        // correcto antes de que el frontend diga dónde está el lienzo: es decir,
+        // el comportamiento viejo. No es arbitrario: mientras no llegue el
+        // mensaje, no se sabe nada mejor, y con esto se ve algo en vez de nada.
+        // ------------------------------------------------------------------
+        let colocacion = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("blit-colocacion"),
+            size: 16,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(&colocacion, 0, bytemuck::cast_slice(&[0.0f32, 0.0f32, 1.0f32, 1.0f32]));
+
+        (pipeline, sampler, view, colocacion)
     }
 
     /// Un frame: ejecuta el grafo del motor y lo pinta.
@@ -1028,6 +1184,17 @@ impl Engine {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                // El offset y la escala del lienzo. Ver `blit.wgsl`: sin este
+                // binding la textura se estiraba a toda la ventana y nada de lo
+                // que se dibujaba caía donde se miraba.
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.colocacion,
+                        offset: 0,
+                        size: wgpu::BufferSize::new(16),
+                    }),
                 },
             ],
         });

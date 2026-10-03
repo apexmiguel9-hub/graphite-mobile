@@ -64,6 +64,21 @@ jni = "0.21"
 log = "0.4"
 android_logger = "0.13"
 
+# ------------------------------------------------------------------
+# `bytemuck`, y solo para `cast_slice`.
+#
+# Para escribir 16 bytes en un uniform buffer hace falta una &[u8] con el
+# `size_of` de lo que se escribe. Se podría hacer a mano con un array de bytes y
+# `to_le_bytes`, que es lo que hace `base64_encode` de este mismo crate; pero
+# `cast_slice` deja el tipo a la vista, que es justo lo que se quiere en un sitio
+# donde un desajuste de tamaño se manifiesta como basura en pantalla y no como un
+# error de compilación.
+#
+# En el workspace ya está (`graphene-std` lo usa), así que no añade tiempo de
+# compilación.
+# ------------------------------------------------------------------
+bytemuck = { version = "1", features = ["derive"] }
+
 # Nota: aquí NO hay `[profile.release]`. Los perfiles solo tienen efecto en la raíz
 # del workspace, y el de la raíz (`lto = "thin"`, `debug = true`) es el que se
 # aplica. Poner un perfil aquí solo produciría un aviso de cargo. OJO: ese

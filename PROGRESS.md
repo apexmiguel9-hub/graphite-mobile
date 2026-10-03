@@ -311,7 +311,7 @@ siguiente.
 
 ---
 
-## 5. Tres bugs de la primera versión con la UI
+## 5. La primera versión con la UI, y lo que faltaba
 
 La interfaz apareció y ya se podía usar. Lo que salió en los primeros cinco
 minutos, todo medido en el móvil.
@@ -416,26 +416,157 @@ descarta, y es lo siguiente.
 Los 24 `msj_descartados` se cuentan por tipo ahora (`nombre_de` en `lib.rs`):
 «cuántos» no decía nada, había que ver «cuáles».
 
-### 5.4 Compilar Rust en local: no se puede
+### 5.5 Se crea la layer pero no se ve nada: el blit no sabía dónde estaba el lienzo
 
-Intentado, y documentado para que no se vuelva a intentar:
+El bug más caro del port, y el que más se resistió a dejar una pista.
 
-| Arreglo | Estado |
-|---|---|
-| `libgcc_s.so` no existe | Stub en `/tmp/stub` |
-| Bionic no tiene `__errno_location`, `bcmp`, `gnu_get_libc_version`, `__xpg_strerror_r` | Shim de 4 funciones en C. **Enlaza.** |
-| Bionic exige el segmento TLS alineado a 64, Rust lo deja en 8 | **Sin arreglo.** `-Wl,-z,max-page-size` no toca la cabecera PT_TLS. |
+**Síntoma:** se arrastra en el lienzo, la pestaña del documento pasa a
+`Untitled Document*`, el relleno del color cambia a rojo — o sea, **el comando
+llega al motor y la herramienta actúa**— pero en el lienzo no aparece nada.
+Lapiz, rectángulo, texto: nada. Y lo más desconcertante, la interfaz entera
+funciona: menús, paneles, pestañas, reglas.
 
-Los build scripts llegan a ejecutarse y mueren ahí. No hay compilador local: **CI
-es el único que compila**, y por eso `cargo check` en local no es una atajo, es
-una pérdida de tiempo.
+**La pista que lo resolvió:** los **tres modos de render fallan igual** (SVG,
+pixel outline, normal). Si fuera un problema de pintado, uno funcionaría. Que
+fallen los tres dice que no es pintado: es **geometría**.
 
-Un hallazgo deambio que sí es real: el `Cargo.lock` estaba **desactualizado** —
-le faltaba `graphite-desktop-wrapper` en `graphite-android-bridge`, una
-dependencia que ya estaba declarada. CI no usa `--locked`, por eso llevaba tiempo
-sin dar señales.
+**Dónde estaba.** `UpdateViewportPhysicalBounds` llegaba y se descartaba:
+
+```
+DESCARTADO x2: UpdateViewportPhysicalBounds
+```
+
+Ese mensaje es el que le dice a la plataforma dónde está el lienzo dentro de la
+ventana. Sin él, el blit estiraba la textura del motor a toda la superficie:
+
+```rust
+let src = match &self.last_texture { Some(t) => t.create_view(...), ... };
+// quad a pantalla completa, uv de 0 a 1
+```
+
+El lienzo ocupa una región —alrededor del 60% del ancho en horizontal— y el
+resto es interfaz. Estirarlo todo hacía que el lienzo se dibujara desplazado y
+escalado. Lo que se dibuja cae en coordenadas que el motor no considera
+visibles, y el blit lo manda a otra parte: **la capa existe, se evalúa
+(`lienzo=146582`) y se pinta donde no se mira.**
+
+El escritorio sí lo placement. `desktop/src/app.rs:285`:
+
+```rust
+let viewport_offset_x = x / window_size.width as f64;
+render_state.set_viewport_offset([viewport_offset_x as f32, viewport_offset_y as f32]);
+let viewport_scale_x = if width != 0. { window_size.width as f64 / width } else { 1. };
+render_state.set_viewport_scale([viewport_scale_x as f32, viewport_scale_y as f32]);
+```
+
+**Las unidades ya son físicas, y eso no es casualidad.** Quien emite el mensaje
+es el editor, no el frontend, y las convierte él:
+
+```rust
+// editor/src/messages/viewport/viewport_message_handler.rs:42
+let physical_bounds = self.bounds().to_physical();
+responses.add(FrontendMessage::UpdateViewportPhysicalBounds { x, y, width, height });
+```
+
+El frontend manda píxeles CSS en `ViewportMessage::Update`
+(`frontend/src/utility-functions/viewports.ts:53`) y el editor los multiplica por
+la escala que le dio. Por eso aquí no hay que convertir nada y la aritmética de
+upstream aplica tal cual. Es lo que hace `blit.wgsl` ahora:
+
+```wgsl
+let coorde = (in.uv - colocacion.offset) * colocacion.scale;
+if (coorde.x < 0.0 || coorde.x > 1.0 || coorde.y < 0.0 || coorde.y > 1.0) {
+    return fondo;   // fuera del lienzo
+}
+let c = textureSample(src, samp, coorde);
+```
+
+**El margen se pinta con el fondo del motor, no con negro.** Antes no se notaba
+porque la textura tapaba toda la ventana. Ahora que la textura se coloca donde
+toca, el margen es visible, y negro ahí es exactamente el triángulo negro que
+este mismo shader arregló una vez. No se puede volver a traer.
+
+**Y el offset tiene que recalcularse en cada giro**, no solo cuando llega el
+mensaje: la colocación depende del tamaño de la superficie, que cambia al girar.
+
+### 5.6 El notch: `displayCutout()` no es `systemBars()`
+
+MEDIDO, con una foto del móvil: el **Path Tool** y los círculos de color quedan
+debajo de la cámara.
+
+Con solo `systemBars()`, los insets salían:
+
+```
+Insets{left=0, top=115, right=117, bottom=0}
+```
+
+`left = 0` en horizontal, con la cámara claramente ahí. La causa es que el recorte
+de pantalla es un **tipo de inset aparte**, no parte de las barras del sistema. Las
+barras son barras; el notch es un agujero en la pantalla. Pedir solo las barras da
+0 donde hay un recorte.
+
+```kotlin
+insets.getInsets(
+    WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+)
+```
+
+La `|` y no una suma, porque los dos tipos se solapan —la barra de estado también
+es zona de cutout— y sumarlos contaría el margen dos veces.
+
+Se loguea también `displayCutout.boundingRect()`, que es lo que hay que
+**comprobar**: si con este cambio el Path Tool sigue debajo de la cámara, el log
+dirá si Android no lo está reportando o si hay que ir a por él de otra forma. Antes
+esto era una suposición.
 
 ---
+
+### 5.7 Compilar Rust en local: sí se puede, con el compilador de Debian
+
+Costó, pero compilar en local convierte un ciclo de 12 minutos en segundos. Y
+todo el camino fue culpa de usar el compilador equivocado para el sistema
+equivocado.
+
+El entorno es un PRoot de **Debian 13 con glibc**, dentro de Termux. El
+`rustc` que estaba en el PATH era el de Termux, que compila para **Bionic**:
+
+| | |
+|---|---|
+| rustup + clang de Termux | ❌ `libgcc_s`, luego 4 símbolos de glibc, luego el segmento TLS desalineado |
+| Shim propio de 4 símbolos en C | 🟡 enlazaba, pero Bionic abortaba el binario al ejecutarlo |
+| `apt install rustc` (1.85.1) | ❌ MSRV: el workspace pide **1.98** |
+| **`~/.cargo/bin/cargo` + `/usr/bin/gcc` de Debian** | ✅ **enlaza con glibc y ejecuta** |
+
+La clave es que el toolchain de rustup **sí** es el bueno (1.99.0, el que pide el
+proyecto) y es `aarch64-unknown-linux-gnu`. Lo que estaba mal era el
+**enlazador**: `cc` resolvía al clang de Termux, que apunta a Android. Con el gcc
+de Debian, dentro del rootfs de Debian, enlaza contra glibc y el binario arranca.
+
+Queda un obstáculo: `ndk-sys` tiene un `compile_error!` deliberado fuera de
+Android, y sin él no se comprueba el puente. Se resuelve parcheando una copia en
+`/tmp` y usando `--config patch.crates-io...`, porque `cargo check` **no enlaza** y
+las referencias a `ANativeWindow_fromSurface` nunca se resuelven:
+
+```bash
+# El camino rápido. NO compila el .so de verdad: eso sigue siendo CI, que tiene
+# el NDK. Lo que da es comprobación de tipos de TODO el grafo, en segundos.
+cp -r ~/.cargo/registry/src/*/ndk-sys-* /tmp/ndk-sys && chmod -R u+w /tmp/ndk-sys
+# quitar el compile_error! de /tmp/ndk-sys/src/lib.rs
+
+env -u RUSTUP_HOME -u CARGO_HOME \
+  CC=/usr/bin/gcc CXX=/usr/bin/g++ \
+  CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=/usr/bin/gcc \
+  CARGO_TARGET_DIR=/tmp/target-deb2 \
+  PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+  ~/.cargo/bin/cargo check -p graphite-android-bridge --message-format short \
+    --config 'patch.crates-io.ndk-sys.path="/tmp/ndk-sys"'
+```
+
+**Lo que esto NO comprueba**, y es lo importante: compila para
+`aarch64-unknown-linux-gnu`, no para `aarch64-linux-android`. Las ramas
+`cfg(target_os = "android")` de upstream —el brazo `Platform::Android`, el de
+`AppWindowPlatform::Android`— **no se compilan aquí**. Ese hueco lo cubre CI y
+solo CI. Todo lo demás es código nuevo y sí se comprueba.
 
 ## 6. La UI: por qué WebView y no reescribir
 
