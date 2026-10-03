@@ -439,8 +439,8 @@ jobs:
 
           # El shim: NO esta en el dist (lo escribe este repo, vite no lo
           # conoce). Se copia desde el repo.
-          cp android/app/src/main/assets/web/bridge.js "$OUT/bridge.js"
-          cp android/app/src/main/assets/web/index.html "$OUT/index.html"
+          cp android/app/src/main/assets/bridge.js "$OUT/bridge.js"
+          cp android/app/src/main/assets/index.html "$OUT/index.html"
           # NO se lleva el `WebUI.kt`.
           #
           # MEDIDO: se llevaba, y `build-apk` lo copiaba encima del `.kt` del
