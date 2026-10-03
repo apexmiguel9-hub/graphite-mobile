@@ -372,40 +372,45 @@ jobs:
           echo "  bundle.js: $SZ bytes"
           test "$SZ" -gt 100000 \
             || { echo "::error::bundle.js de $SZ bytes: no es la app"; exit 1; }
-          # Y el glue tiene que citar el nombre del wasm, que se ha renombrado.
-          # MEDIDO: la referencia al wasm dentro del bundle queda como
-          # `/assets/glue.wasm`, con ruta ABSOLUTA. Con `file://` eso significa
-          # la raiz del sistema de ficheros, y el wasm no se carga: el frontend
-          # se queda esperando el modulo.
+          # ------------------------------------------------------------------
+          # EL WASM: NOMBRE Y PREFIJO.
           #
-          # Por eso el wasm va en `assets/web/assets/glue.wasm`, no en
-          # `assets/web/glue.wasm`: para que la ruta absoluta coincida.
+          # El bundle lo pide por `/assets/<nombre>.wasm`. Ese prefijo NO se
+          # sustituye nunca: es el que registra `WebViewAssetLoader`, que lo
+          # traduce a la carpeta `assets/web/` del APK. Por eso el wasm va PLANO en
+          # `$DEST`, no en un subdirectorio.
           #
-          # Es el mismo motivo por el que el frontend se sirve por
-          # `file:///android_asset/web/index.html` y no con un `WebViewAssetLoader`
-          # que sirviese desde `https://appassets.androidplatform.net`: el
-          # frontend construye rutas con `/` delante.
-          # PLANO: el prefijo `/assets/` del handler se traduce a `assets/web/`,
-          # asi que `/assets/glue.wasm` sale de `$DEST/glue.wasm`. MEDIDO: con un
-          # subdirectorio, el wasm no se encontraba y el frontend moria con
-          # "Failed to execute 'compile' on 'WebAssembly'".
-          grep -q 'glue\.wasm' "$DEST/bundle.js" \
-            || { echo "::error::el bundle no cita glue.wasm: el wasm no cargara"; exit 1; }
+          # MEDIDO, dos veces, y las dos por lo mismo:
+          #  - con el wasm en `assets/web/assets/`, el handler no lo encontraba:
+          #      Failed to execute 'compile' on 'WebAssembly': HTTP status code
+          #      is not ok
+          #  - con el prefijo `/assets/` sustituido por `glue.wasm`, la ruta
+          #    quedaba RELATIVA y resolvia contra la pagina actual, no contra el
+          #    handler:
+          #      ::error::el bundle ya no cita /assets/glue.wasm
+          #
+          # Lo que se cambia es el NOMBRE con hash; el prefijo se queda.
+          # ------------------------------------------------------------------
+          grep -q '/assets/glue\.wasm' "$DEST/bundle.js" \
+            || { echo "::error::el bundle no cita /assets/glue.wasm"; exit 1; }
+          grep -q 'graphite_wasm_wrapper_bg-' "$DEST/bundle.js" \
+            && { echo "::error::quedo el nombre con hash del wasm en el bundle"; exit 1; }
           test -f "$DEST/glue.wasm" \
             || { echo "::error::no existe glue.wasm en la raiz de los assets"; exit 1; }
-          # Y las miniaturas, que tambien van por ruta absoluta.
+          echo "  OK  /assets/glue.wasm apunta a $DEST/glue.wasm, sin hash"
+
+          # LAS MINIATURAS, que tambien van por ruta absoluta y se perdian en
+          # silencio: CERO ficheros `thumbnail-*` en el APK, y el menu de
+          # bienvenida salia sin imagenes y sin un solo error.
           N=$(find "$DEST" -maxdepth 1 -name 'thumbnail-*.png' | wc -l)
           test "$N" -gt 0 \
             || { echo "::error::no hay miniaturas; el welcome saldra vacio"; exit 1; }
           echo "  OK  $N miniaturas en la raiz de los assets"
-          # No se intenta recuperar la ruta con `grep -o`: el bundle esta minificado en
-          # una sola linea y `[^"']*` se come medio fichero, devolviendo basura.
-          # Se comprueba lo unico que importa: que el fichero este donde la ruta
-          # `/assets/glue.wasm` va a buscarlo.
+
           # ------------------------------------------------------------------
           # `type="module"`, Y QUE EL BUNDLE NECESITE MODULE.
           #
-          # MEDIDO: sin `type="module"` en el `<script>`, el WebView lanza
+          # MEDIDO: sin `type="module"`, el WebView lanza
           #   Uncaught SyntaxError: Cannot use 'import.meta' outside a module
           # y el frontend no arranca. Verde en CI, negro en el móvil.
           #
@@ -413,18 +418,22 @@ jobs:
           # propio `.wasm`. Si el bundle lo usa, el `<script>` TIENE que ser
           # module; y si no lo usa, `type="module"` no hace daño.
           #
-          # Aquí se comprueban las dos mitades: que el index lo declare, y que el
-          # bundle lo necesite. Con eso, un cambio en cualquiera de las dos
-          # secciones del contrato da error en el build en vez de en el móvil.
+          # Se comprueban las dos mitades: que el index lo declare, y que el
+          # bundle lo necesite. Un cambio en cualquiera de las dos da error en el
+          # build en vez de en el móvil.
           # ------------------------------------------------------------------
           grep -q 'type="module"' "$DEST/index.html" \
             || { echo "::error::index.html no declara type=\"module\" en el script"; exit 1; }
-          echo "  OK  index.html declara type=\"module\""
+          grep -q 'import\.meta' "$DEST/bundle.js" \
+            || { echo "::error::el bundle NO usa import.meta; el index.html declara"
+               echo "::error::type=\"module\" sin necesidad. Revisar el contrato"; exit 1; }
+          echo "  OK  index.html declara type=\"module\" y el bundle lo necesita"
 
-          # EL CSS. MEDIDO: vite saca el CSS del bundle y lo mete en el
-          # `index.html` que genera. Este `index.html` es NUESTRO y lo
+          # EL CSS. MEDIDO: vite saca el CSS del bundle y lo mete en un `<link>`
+          # del `index.html` que genera. Este `index.html` es NUESTRO y lo
           # reemplaza, asi que el `<link>` se perdia y la UI salia SIN ESTILOS:
-          # arrancaba, dibujaba, y todo mal puesto.
+          # arrancaba, dibujaba, enviaba mensajes al motor, y todo mal puesto.
+          # Sin un solo error en ningun log.
           #
           # El bundle no lo menciona: no hay forma de que lo pida por su cuenta.
           grep -q 'style\.css' "$DEST/index.html" \
@@ -433,20 +442,6 @@ jobs:
             || { echo "::error::index.html enlaza style.css pero el fichero no esta"; exit 1; }
           echo "  OK  index.html enlaza style.css y el fichero existe"
 
-          grep -q 'import\.meta' "$DEST/bundle.js" \
-            || { echo "::error::el bundle NO usa import.meta; el index.html declara"
-               echo "::error::type=\"module\" sin necesidad. Revisar el contrato"; exit 1; }
-          echo "  OK  el bundle usa import.meta, type=\"module\" es necesario"
-
-          test -f "$DEST/assets/glue.wasm" \
-            || { echo "::error::no existe assets/glue.wasm: el wasm no cargara"; exit 1; }
-          HASHED=$(find "$DEST/assets" -name 'graphite_wasm_wrapper_bg-*.wasm' | head -1)
-          if [ -n "$HASHED" ]; then
-            echo "::error::quedo un wasm con el nombre con hash: $HASHED"
-            echo "::error::el glue buscara ese nombre, y el hash ya no cuadra"
-            exit 1
-          fi
-          echo "  OK  assets/glue.wasm en su sitio, sin hash residual"
 
       - name: Download .so
         env:
