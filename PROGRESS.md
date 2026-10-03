@@ -562,6 +562,17 @@ env -u RUSTUP_HOME -u CARGO_HOME \
     --config 'patch.crates-io.ndk-sys.path="/tmp/ndk-sys"'
 ```
 
+**Y cuándo NO compensa**, que es la parte que hay que decir y no omitir:
+
+- **Añadir o quitar una dependencia invalida el grafo entero.** Al meter
+  `tracing-subscriber`, el grafo tardó **48 minutos** recompilando `graphene_std`
+  y compañía. CI tarda diez. Añadir dependencias: CI gana.
+- **Cambiar código sí**: entonces son ~20 segundos, porque no se toca nada del
+  grafo. Ahí es donde vale.
+- Ojo con dejar procesos vivos: un `cargo` abortado deja el lock del directorio de
+  compilación tomado y el siguiente se queda en `Blocking waiting for file lock`
+  sin explicar nada. Pasa.
+
 **Lo que esto NO comprueba**, y es lo importante: compila para
 `aarch64-unknown-linux-gnu`, no para `aarch64-linux-android`. Las ramas
 `cfg(target_os = "android")` de upstream —el brazo `Platform::Android`, el de
