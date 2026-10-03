@@ -234,11 +234,19 @@ jobs:
           # frontend construye rutas con `/` delante.
           grep -q 'glue.wasm' "$DEST/bundle.js" \
             || { echo "::error::el bundle no cita glue.wasm: el wasm no cargara"; exit 1; }
-          REF=$(grep -o '[^"'"'"']*glue\.wasm' "$DEST/bundle.js" | head -1)
-          echo "  el bundle cita el wasm como: $REF"
+          # No se intenta recuperar la ruta con `grep -o`: el bundle esta minificado en
+          # una sola linea y `[^"']*` se come medio fichero, devolviendo basura.
+          # Se comprueba lo unico que importa: que el fichero este donde la ruta
+          # `/assets/glue.wasm` va a buscarlo.
           test -f "$DEST/assets/glue.wasm" \
-            || { echo "::error::el bundle cita '$REF' pero no existe assets/glue.wasm"; exit 1; }
-          echo "  OK  assets/glue.wasm existe, la ruta absoluta resolvera"
+            || { echo "::error::no existe assets/glue.wasm: el wasm no cargara"; exit 1; }
+          HASHED=$(find "$DEST/assets" -name 'graphite_wasm_wrapper_bg-*.wasm' | head -1)
+          if [ -n "$HASHED" ]; then
+            echo "::error::quedo un wasm con el nombre con hash: $HASHED"
+            echo "::error::el glue buscara ese nombre, y el hash ya no cuadra"
+            exit 1
+          fi
+          echo "  OK  assets/glue.wasm en su sitio, sin hash residual"
 
       - name: Download .so
         env:

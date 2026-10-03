@@ -433,13 +433,27 @@ jobs:
             echo "::error::el bundle ya no cita glue.wasm: se rompio el sed"
             exit 1
           fi
-          echo "  el bundle lo cita como: $REF"
-          case "$REF" in
-            /*) test -f "$OUT$REF" \
-                   || { echo "::error::cita '$REF' pero no existe $OUT$REF"; exit 1; }
-                echo "  OK  ruta absoluta, existe $OUT$REF" ;;
-            *)  echo "  (ruta relativa, el navegador la resuelve contra el index)" ;;
-          esac
+          # El bundle esta MINIFICADO en una sola linea de cientos de KB, asi que
+          # `grep -o '[^"'\'']*glue\.wasm'` se come medio fichero y devuelve
+          # basura: devuelve 300 bytes de codigo, y el `test -f "$OUT$REF"`
+          # posterior falla por un motivo sin relacion. MEDIDO.
+          #
+          # Lo que importa no es recuperar la ruta: es que exista el fichero
+          # JUSTO donde apunta. Y la ruta se sabe: es `/assets/glue.wasm`, la
+          # que deja el `sed` de arriba. Se comprueba esa, literal.
+          test -f "$OUT/assets/glue.wasm" \
+            || { echo "::error::no existe assets/glue.wasm en el paquete"; exit 1; }
+
+          # Y que el nombre con hash no quede por ningun sitio: si queda, el sed
+          # no hizo su trabajo en alguna de las dos formas que cubre, y el
+          # frontend buscara un fichero que no esta.
+          HASHNAME=$(basename "$(find frontend/dist/assets -name 'graphite_wasm_wrapper_bg-*.wasm' | head -1)")
+          if grep -q "$HASHNAME" "$OUT/bundle.js"; then
+            echo "::error::el bundle sigue citando '$HASHNAME', el nombre con hash"
+            echo "::error::el frontend buscara ese nombre y no existe"
+            exit 1
+          fi
+          echo "  OK  el wasm esta en assets/ y el hash ya no aparece en el bundle"
 
           tar -czf frontend-for-android.tar.gz -C "$OUT" .
           ls -la frontend-for-android.tar.gz
