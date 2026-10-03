@@ -420,10 +420,12 @@ jobs:
           # conoce). Se copia desde el repo.
           cp android/app/src/main/assets/web/bridge.js "$OUT/bridge.js"
           cp android/app/src/main/assets/web/index.html "$OUT/index.html"
-          # `WebUI.kt` va en el paquete aunque no sea un asset: `build-apk` lo
-          # copia encima del `.kt` del repo antes de compilar, porque es donde va
-          # el shim incrustado.
-          cp android/app/src/main/kotlin/dev/graphite/mobile/WebUI.kt "$OUT/WebUI.kt"
+          # `WebUI.kt` va en el paquete porque `build-apk` lo copia encima del
+          # `.kt` del repo antes de compilar. Va FUERA de `assets/`, que es lo que
+          # se empaqueta en el APK: meter ahi un `.kt` que no usa nadie solo
+          # engorda el APK.
+          mkdir -p "$OUT/shim"
+          cp android/app/src/main/kotlin/dev/graphite/mobile/WebUI.kt "$OUT/shim/WebUI.kt"
 
           # ------------------------------------------------------------------
           # INCRUSTAR EL SHIM EN EL KOTLIN.
@@ -452,7 +454,7 @@ jobs:
             || { echo "::error::$KOTLIN no tiene el marcador SHIM_PLACEHOLDER"; exit 1; }
 
           # Se incrusta en una COPIA, y la copia es lo que viaja.
-          cp "$KOTLIN" "$OUT/WebUI.kt"
+          cp "$KOTLIN" "$OUT/shim/WebUI.kt"
 
           # El Python va en un fichero aparte, NO en un heredoc.
           #
@@ -464,7 +466,7 @@ jobs:
           # sin log y sin ningun paso al que mirar. Por eso hay un
           # `yaml.safe_load` en los tres workflows antes de empujar: un YAML
           # invalido se ve en local en un segundo.
-          python3 android/scripts/embed-shim.py "$OUT/WebUI.kt"
+          python3 android/scripts/embed-shim.py "$OUT/shim/WebUI.kt"
 
           # ------------------------------------------------------------------
           # QUE LA INCRUSTACION SE HAYA HECHO, y sobre la COPIA.
@@ -480,12 +482,12 @@ jobs:
           # Ahora: sobre la copia, y con el delimitador entero.
           # ------------------------------------------------------------------
           DELIM=$(python3 -c "print(chr(34) * 3 + 'SHIM_PLACEHOLDER' + chr(34) * 3)")
-          if grep -qF "$DELIM" "$OUT/WebUI.kt"; then
+          if grep -qF "$DELIM" "$OUT/shim/WebUI.kt"; then
             echo "::error::el marcador sin sustituir sigue en WebUI.kt"
             exit 1
           fi
           for g in 'window.sendNativeMessage' 'window.initializeNativeCommunication'; do
-            grep -q "$g" "$OUT/WebUI.kt" \
+            grep -q "$g" "$OUT/shim/WebUI.kt" \
               || { echo "::error::el shim incrustado no define $g"; exit 1; }
           done
           echo "  OK  bridge.js incrustado en WebUI.kt (3 globals presentes)"

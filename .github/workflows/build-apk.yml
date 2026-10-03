@@ -263,6 +263,33 @@ jobs:
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           echo "Usando el frontend del run $RUN_ID"
 
+      # ------------------------------------------------------------------
+      # NOTA SOBRE `file://` Y EL CORS DE `bundle.js`.
+      #
+      # MEDIDO, y sigue pasando con el APK bien construido:
+      #
+      #   Access to script at 'file:///android_asset/web/bundle.js' from origin
+      #   'null' has been blocked by CORS policy: Cross origin requests are only
+      #   supported for protocol schemes: chrome, chrome-untrusted, data, http,
+      #   https
+      #
+      # La UI NO se carga por esto. La causa es que `bundle.js` se declara
+      # `type="module"`, y un modulo ES una peticion: con esquema `file:` y origen
+      # `null` el navegador la bloquea. Un `<script>` clasico pasaria, pero el
+      # bundle necesita ser module por el `import.meta` con el que localiza su
+      # propio `.wasm`.
+      #
+      # La solucion es `WebViewAssetLoader`: sirve los assets por
+      # `https://appassets.androidplatform.net`, que es un origen real con
+      # esquema `https`. Ahi los modulos y el `fetch` funcionan.
+      #
+      # MEDIDO tambien: el shim SI llega a inyectarse (`shim inyectado
+      # (embebido, 5092 bytes)` y `[graphite] bridge.js cargado`), y el motor
+      # renderiza a 60 fps con `resizes=0`. Lo que falta es el frontend.
+      #
+      # Este workflow NO lo arregla: es un cambio de Kotlin, no de empaquetado.
+      # Lo que hace es que quede escrito aqui, junto al log que lo produce.
+      # ------------------------------------------------------------------
       - name: Download the frontend into assets/web
         env:
           GH_TOKEN: ${{ github.token }}
@@ -328,8 +355,8 @@ jobs:
           # ------------------------------------------------------------------
           DELIM=$(python3 -c "print(chr(34) * 3 + 'SHIM_PLACEHOLDER' + chr(34) * 3)")
           KT=android/app/src/main/kotlin/dev/graphite/mobile/WebUI.kt
-          EMB="$DEST/WebUI.kt"
-          test -f "$EMB" || { echo "::error::el artefacto no trae WebUI.kt con el shim"; exit 1; }
+          EMB="$DEST/shim/WebUI.kt"
+          test -f "$EMB" || { echo "::error::el artefacto no trae shim/WebUI.kt"; exit 1; }
 
           if grep -qF "$DELIM" "$EMB"; then
             echo "::error::el WebUI.kt del artefacto tiene el marcador sin sustituir"
