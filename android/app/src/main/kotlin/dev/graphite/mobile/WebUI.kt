@@ -5,6 +5,8 @@ import android.content.Context
 import android.util.Log
 import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -88,48 +90,73 @@ class WebUI {
         }
 
         webViewClient = object : WebViewClient() {
+            // ------------------------------------------------------------------
+            // LA FIRMA REAL, LEIDA DEL ANDROID.JAR, NO SUPUESTA.
+            //
+            // MEDIDO, extrayendo la clase del `android.jar` de API 36:
+            //
+            //   WebViewClient.onReceivedError(
+            //       WebView, WebResourceRequest, WebResourceError)
+            //
+            // O sea que en API 23+ NO es `Int` + `String`: el codigo va en un
+            // `WebResourceError` y hay que sacar `errorCode` y `description` de
+            // ahi. La firma antigua de 4 parametros existe pero esta deprecada.
+            //
+            // Esto costaba tres iteraciones de CI por adivinar. La firma esta
+            // escrita arriba, copiada del `.class`, para que no haya que
+            // adivinarla otra vez.
+            // ------------------------------------------------------------------
+            override fun onReceivedError(
+                view: WebView,
+                request: WebResourceRequest,
+                error: WebResourceError,
+            ) {
+                // Con `LOAD_NO_CACHE` y assets locales no deberia pasar, pero si
+                // pasa es un fallo de carga de la UI entera y hay que verlo.
+                Log.e(
+                    TAG,
+                    "error al cargar ${error.errorCode} (${error.description}) " +
+                        "en ${request.url} isForMainFrame=${request.isForMainFrame}",
+                )
+            }
+
             override fun onPageFinished(view: WebView, url: String) {
                 Log.i(TAG, "el frontend ha terminado de cargar: $url")
-                // El shim se inyecta ANTES de que corra el wasm, no después.
-                // Si se inyectara al terminar de cargar la página, el wasm ya
-                // habría intentado llamar a `sendNativeMessage` y no lo habría
-                // encontrado.
+                // El shim se inyecta ANTES de que corra el wasm, no despues. Si
+                // se inyectara despues, el wasm ya habria intentado llamar a
+                // `sendNativeMessage` y no lo habria encontrado.
                 inyectarShim(view)
                 cargado = true
             }
+        }
 
-            // En API 23+ la firma lleva `request`. Sin ese parametro el
-            // override no casa y sale "overrides nothing".
-            //
-            // MEDIDO: se probaron dos cosas que NO eran la causa, y las dos
-            // dan el mismo error: ponerlos `protected` en vez de `private`, y
-            // quitar el `request`. Aqui van `public`, que es como los declara
-            // `WebViewClient`. La visibilidad no era el problema.
-            @Deprecated("Deprecated in Java")
-            @Suppress("DEPRECATION")
-            override fun onReceivedError(
-                view: WebView?,
-                request: WebResourceRequest?,
-                errorCode: Int,
-                description: String?,
-                failingUrl: String?,
-            ) {
-                // Con `LOAD_NO_CACHE` y assets locales no debería pasar, pero
-                // si pasa es un fallo de carga de la UI entera y hay que verlo.
-                Log.e(TAG, "error al cargar: $errorCode $description en $failingUrl")
-            }
-
+        /**
+         * La consola del WebView.
+         *
+         * **Va en `WebChromeClient`, no en `WebViewClient`.** Este era el
+         * motivo de "overrides nothing": el metodo no estaba en la clase que se
+         * estaba heredando.
+         *
+         * MEDIDO, leyendo las clases del `android.jar` de API 36:
+         *
+         *   WebViewClient    onReceivedError(WebView, WebResourceRequest, WebResourceError)
+         *   WebChromeClient  onConsoleMessage(ConsoleMessage): boolean
+         *
+         * Los dos son `public`, no `protected`. Los dos intentos anteriores de
+         * cambiar la visibilidad eran ruido: el problema era que el metodo no
+         * existia en esa clase.
+         */
+        webChromeClient = object : WebChromeClient() {
             override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
-                // `console.log` del frontend acaba en logcat con el tag del
-                // proceso, no con el nuestro. Envolverlo aquí mete todo bajo
-                // GRAPHITE, que es donde se mira.
+                // El `console.log` del frontend acaba en logcat con el tag del
+                // proceso del navegador, no con el nuestro. Envolverlo aqui lo
+                // mete todo bajo GRAPHITE, que es donde se mira.
                 val tag = msg.sourceId()?.substringAfterLast('/') ?: "web"
+                val linea = "[$tag] ${msg.message()} @${msg.lineNumber()}"
                 when (msg.messageLevel()) {
-                    ConsoleMessage.MessageLevel.ERROR ->
-                        Log.e(TAG, "[$tag] ${msg.message()} @${msg.lineNumber()}")
-                    ConsoleMessage.MessageLevel.WARNING ->
-                        Log.w(TAG, "[$tag] ${msg.message()} @${msg.lineNumber()}")
-                    else -> Log.i(TAG, "[$tag] ${msg.message()} @${msg.lineNumber()}")
+                    ConsoleMessage.MessageLevel.ERROR -> Log.e(TAG, linea)
+                    ConsoleMessage.MessageLevel.WARNING -> Log.w(TAG, linea)
+                    else -> Log.i(TAG, linea)
                 }
                 return true
             }
