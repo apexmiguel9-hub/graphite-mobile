@@ -445,16 +445,18 @@ fn init_logger() {
     // un segundo `init` reventado seria un panic en el hilo principal. Con
     // `surfaceCreated`又名 siendo llamado en cada reanudar, eso no es teorico.
     //
-    let _ = tracing_log::LogTracer::init(log::LevelFilter::Info);
-    // `warn!` del motor con prefijo, y `info!` de Graphite tambien salen. Sin
-    // esto, un `tracing::info!` de la biblioteca se pierde igual que un error.
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,graphite=info")),
-        )
-        .with_writer(std::io::stderr)
-        .try_init();
+    // Solo `LogTracer`, y NO ademas `tracing_subscriber::fmt()`.
+    //
+    // `LogTracer` convierte cada evento de `tracing` en un registro de `log`, y
+    // `android_logger` —que ya estaba instalado con `LevelFilter::Info`— lo
+    // escribe con NUESTRO tag. Una sola vía, un solo filtro, un solo formato.
+    //
+    // Montar las dos duplicaba cada evento: el fmt escribe en stderr y el
+    // LogTracer en logcat. MEDIDO: `tracing_log::LogTracer::init` **no**
+    // argumentos —`error[E0061]: this function takes 0 arguments but 1 argument
+    // was supplied`— y no hace falta ninguno, porque el nivel sale de
+    // `log::max_level()`, que ya lo fijó `android_logger`.
+    let _ = tracing_log::LogTracer::init();
     // En Android los panics de Rust **NO** llegan a logcat: van a stderr, y stderr
     // está cerrado. Sin este hook, un panic aborta sin dejar ni una línea. Pasó
     // dos veces en el spike anterior y costó dos builds enteros.

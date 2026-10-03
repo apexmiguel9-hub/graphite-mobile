@@ -2293,7 +2293,6 @@ dependencies = [
  "raw-window-handle",
  "tracing",
  "tracing-log",
- "tracing-subscriber",
  "wgpu",
  "wgpu-executor",
  "wgpu-sync",

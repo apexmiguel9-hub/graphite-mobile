@@ -80,7 +80,7 @@ android_logger = "0.13"
 bytemuck = { version = "1", features = ["derive"] }
 
 # ------------------------------------------------------------------
-# `tracing-subscriber` y `tracing-log`.
+# `tracing-log`.
 #
 # MEDIDO, y es lo mas importante de este commit: NO HABIA NINGUN subscriber de
 # `tracing` instalado. Upstream usa `tracing::error!` y `tracing::warn!` por todo
@@ -90,14 +90,13 @@ bytemuck = { version = "1", features = ["derive"] }
 #
 # `tracing-log` (`LogTracer`) traduce los eventos de `tracing` a registros de
 # `log`, que es lo que `android_logger` ya sabe escribir, asi que todo sale con
-# el mismo tag y el mismo filtro. `tracing-subscriber` hace lo mismo para lo que
-# no pase por el bridge, por stderr.
+# el mismo tag y el mismo filtro. Una sola via, no dos.
 #
-# Los dos ya estaban en el workspace, asi que no anaden tiempo de compilacion.
+# NO hace falta `tracing-subscriber`: montarlo ademas duplicaba cada evento, uno
+# por stderr y otro por logcat. Se quita.
 # ------------------------------------------------------------------
 tracing = "0.1"
 tracing-log = "0.2"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Nota: aquí NO hay `[profile.release]`. Los perfiles solo tienen efecto en la raíz
 # del workspace, y el de la raíz (`lto = "thin"`, `debug = true`) es el que se
