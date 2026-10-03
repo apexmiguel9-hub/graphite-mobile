@@ -521,7 +521,7 @@ esto era una suposición.
 
 ---
 
-### 5.12 Compilar Rust en local: sí se puede, con el compilador de Debian
+### 5.14 Compilar Rust en local: sí se puede, con el compilador de Debian
 
 Costó, pero compilar en local convierte un ciclo de 12 minutos en segundos. Y
 todo el camino fue culpa de usar el compilador equivocado para el sistema
