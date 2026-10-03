@@ -25,7 +25,7 @@ Uso:  python3 embed-shim.py <ruta/WebUI.kt>
 
 import sys
 
-SHIM = "android/app/src/main/assets/web/bridge.js"
+SHIM = "android/app/src/main/assets/bridge.js"
 TRIPLES = chr(34) * 3
 MARCADOR = TRIPLES + "SHIM_PLACEHOLDER" + TRIPLES
 
