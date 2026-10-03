@@ -410,18 +410,39 @@ jobs:
           cp android/app/src/main/assets/web/bridge.js "$OUT/bridge.js"
           cp android/app/src/main/assets/web/index.html "$OUT/index.html"
 
-          # Los iconos y las miniaturas que el bundle puede pedir por URL.
-          # El frontend los trae INLINEADOS por el alias `?raw` de vite, asi que
-          # esto es solo por si algo se pide en runtime.
+          # `demo-artwork/`: los .graphite que el frontend puede abrir por URL.
           if [ -d frontend/dist/demo-artwork ]; then
             cp -r frontend/dist/demo-artwork "$OUT/demo-artwork"
           fi
-          cp -r frontend/dist/assets "$OUT/assets" 2>/dev/null || true
+
+          # `dist/assets/` NO se copia entero, a proposito.
+          #
+          # MEDIDO: al hacerlo aparecia
+          #   assets/assets/graphite_wasm_wrapper_bg-<hash>.wasm
+          # o sea una COPIA del wasm con el nombre viejo, en un directorio que no
+          # usa nadie. El check de `build-apk` lo detecto y fallo, que es
+          # exactamente lo que un check debe hacer, pero el fichero era basura
+          # desde el principio.
+          #
+          # Lo unico que hace falta de `assets/` es el wasm, y ya esta en
+          # `$OUT/assets/glue.wasm`. Los iconos y las fuentes van INLINEADOS en
+          # `bundle.js` por los alias de vite, asi que no se piden por separado.
 
           echo "=== contenido empaquetado ==="
           ls -la "$OUT"
           echo "=== total ==="
           du -sh "$OUT"
+
+          # Ni una copia de mas. El paquete tiene que ser exactamente lo que la
+          # app carga: un indice, el bundle, el css, el wasm, el shim y el arte
+          # de demo. Cualquier otra cosa es un fichero que ocupa sitio y no se
+          # abre nunca.
+          echo "=== que hay, fichero a fichero ==="
+          find "$OUT" -type f | sed "s|^$OUT/||" | sort | head -30
+          COUNT=$(find "$OUT" -type f | wc -l)
+          echo "  $COUNT ficheros"
+          test "$COUNT" -lt 25 \
+            || { echo "::error::$COUNT ficheros: hay duplicados de mas"; exit 1; }
 
           # El bundle tiene que citar el wasm en la ruta por la que realmente
           # se va a servir, y el fichero tiene que estar ahi. Con `file://`, una
