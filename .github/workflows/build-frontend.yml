@@ -421,6 +421,44 @@ jobs:
           cp android/app/src/main/assets/web/bridge.js "$OUT/bridge.js"
           cp android/app/src/main/assets/web/index.html "$OUT/index.html"
 
+          # ------------------------------------------------------------------
+          # INCRUSTAR EL SHIM EN EL KOTLIN.
+          #
+          # MEDIDO: cargarlo con `document.createElement('script')` y un `src` a
+          # `file://` falla con CORS, porque una pagina `file://` tiene origen
+          # `null` y cualquier peticion a otro fichero de disco es cross-origin
+          # contra origen nulo. `evaluateJavascript` no hace peticiones, asi que
+          # el shim viaja dentro del propio JS evaluado.
+          #
+          # Por eso bridge.js se versiona como `.js` —para poder editarlo y
+          # revisarlo como JavaScript— y se incrusta en el `.kt` al empaquetar.
+          # El fichero versionado es la fuente; el `.kt` lleva un marcador que se
+          # sustituye aqui, para que no haya dos copias que se puedan divergir.
+          # ------------------------------------------------------------------
+          KOTLIN=android/app/src/main/kotlin/dev/graphite/mobile/WebUI.kt
+          test -f "$KOTLIN" || { echo "::error::no existe $KOTLIN"; exit 1; }
+          grep -q 'SHIM_PLACEHOLDER' "$KOTLIN" \
+            || { echo "::error::$KOTLIN no tiene el marcador SHIM_PLACEHOLDER"; exit 1; }
+
+          python3 - "$KOTLIN" <<'PYEOF'
+import sys
+ruta = sys.argv[1]
+shim = open('android/app/src/main/assets/web/bridge.js').read()
+# Kotlin: los raw strings cortan en \"\"\". No hay en el shim, pero por si acaso.
+shim = shim.replace('"""', '\\\\"\\\\"\\\\"')
+texto = open(ruta).read()
+n = texto.count('"""SHIM_PLACEHOLDER"""')
+if n != 1:
+    raise SystemExit(f"::error::se esperaba 1 marcador, hay {n}")
+abrir(a=ruta, w=open(ruta, 'w')).write(texto.replace('"""SHIM_PLACEHOLDER"""', '"""\n' + shim + '\n"""'))
+print(f"  shim incrustado: {len(shim)} bytes")
+PYEOF
+          grep -q 'SHIM_PLACEHOLDER' "$KOTLIN" \
+            && { echo "::error::el marcador no se sustituyo"; exit 1; }
+          grep -q 'window.sendNativeMessage' "$KOTLIN" \
+            || { echo "::error::el shim incrustado no define sendNativeMessage"; exit 1; }
+          echo "  OK  bridge.js incrustado en WebUI.kt"
+
           # `demo-artwork/`: los .graphite que el frontend puede abrir por URL.
           if [ -d frontend/dist/demo-artwork ]; then
             cp -r frontend/dist/demo-artwork "$OUT/demo-artwork"
@@ -459,20 +497,16 @@ jobs:
           # se va a servir, y el fichero tiene que estar ahi. Con `file://`, una
           # ruta absoluta que no existe es un fallo silencioso: el frontend se
           # queda en negro sin error visible.
-          echo "=== comprobacion: el wasm se podra cargar ==="
-          REF=$(grep -o '[^"'"'"']*glue\.wasm' "$OUT/bundle.js" | head -1 || true)
-          if [ -z "$REF" ]; then
-            echo "::error::el bundle ya no cita glue.wasm: se rompio el sed"
-            exit 1
-          fi
-          # El bundle esta MINIFICADO en una sola linea de cientos de KB, asi que
+          # El bundle esta MINIFICADO en una sola linea de cientos de KB. Un
           # `grep -o '[^"'\'']*glue\.wasm'` se come medio fichero y devuelve
-          # basura: devuelve 300 bytes de codigo, y el `test -f "$OUT$REF"`
-          # posterior falla por un motivo sin relacion. MEDIDO.
+          # 300 bytes de codigo que casualmente contienen esa cadena; el
+          # `test -f` posteriorThen falla por un motivo sin relacion. MEDIDO.
           #
-          # Lo que importa no es recuperar la ruta: es que exista el fichero
-          # JUSTO donde apunta. Y la ruta se sabe: es `/assets/glue.wasm`, la
-          # que deja el `sed` de arriba. Se comprueba esa, literal.
+          # Lo que importa no es recuperar la ruta: es que el fichero este
+          # JUSTO donde apunta. Y la ruta se sabe, es `/assets/glue.wasm`, la que
+          # deja el `sed` de arriba. Se comprueba esa, literal.
+          grep -q 'assets/glue\.wasm' "$OUT/bundle.js" \
+            || { echo "::error::el bundle ya no cita /assets/glue.wasm"; exit 1; }
           test -f "$OUT/assets/glue.wasm" \
             || { echo "::error::no existe assets/glue.wasm en el paquete"; exit 1; }
 

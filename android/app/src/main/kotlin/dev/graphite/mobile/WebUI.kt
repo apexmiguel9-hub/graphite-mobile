@@ -177,8 +177,23 @@ class WebUI {
      * del bundle de vite.
      */
     private fun inyectarShim(view: WebView) {
+        // MEDIDO: cargar el shim con `document.createElement('script')` y un
+        // `src` a `file://` da dos fallos, y el log los enseña los dos:
+        //
+        //   1. net::ERR_FAILED en bridge.js
+        //   2. Access to script at 'file://...' from origin 'null' has been
+        //      blocked by CORS policy: ... only supported for protocol schemes:
+        //      chrome, data, http, https
+        //
+        // El segundo es el importante: una pagina `file://` tiene origen `null`,
+        // y `fetch`/`import` de otro fichero de disco son peticiones
+        // cross-origin contra origen nulo, que el navegador bloquea.
+        //
+        // `evaluateJavascript` no hace peticion ninguna: el codigo viaja dentro
+        // del propio JavaScript evaluado. Por eso el shim va EMBEBIDO como
+        // constante y no se carga como fichero.
         view.evaluateJavascript(SHIM_JS, null)
-        Log.i(TAG, "shim inyectado")
+        Log.i(TAG, "shim inyectado (embebido, sin fetch)")
     }
 
     /**
@@ -249,6 +264,34 @@ class WebUI {
             Log.i(TAG, "el frontend pide conexión: ${width}x$height")
             return nativeInitialized(width, height)
         }
+    }
+
+    companion object {
+        const val TAG = "GRAPHITE"
+
+        /**
+         * El shim, embebido en el binario y no cargado como fichero.
+         *
+         * MEDIDO: cargarlo con `document.createElement('script')` y un `src` a
+         * `file://` falla con CORS. Una pagina `file://` tiene origen `null`, y
+         * cualquier peticion a otro fichero de disco es cross-origin contra
+         * origen nulo, que el navegador bloquea:
+         *
+         *   Access to script at 'file:///android_asset/web/bridge.js' from
+         *   origin 'null' has been blocked by CORS policy
+         *
+         * `evaluateJavascript` no hace ninguna peticion: el codigo va dentro del
+         * propio JavaScript evaluado. Por eso el shim va aqui y no en
+         * `assets/`.
+         *
+         * ESTE FICHERO SE GENERA AL COMPILAR. La fuente es
+         * `android/app/src/main/assets/web/bridge.js`, y el workflow
+         * `build-frontend` incrusta su contenido aqui sustituyendo el marcador
+         * `SHIM_PLACEHOLDER`. El `.js` se versiona aparte para poder editarlo y
+         * revisarlo como JavaScript, que es mas comodo que dentro de una cadena
+         * de Kotlin; y el marcador evita que haya dos copias que diverjan.
+         */
+        private val SHIM_JS: String = """SHIM_PLACEHOLDER"""
     }
 
     companion object {
