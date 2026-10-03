@@ -46,7 +46,7 @@ on:
   push:
     branches: [master]
     paths:
-      # `android/app/src/main/assets/web/` entero, y no una lista. Aqui viven
+      # `android/app/src/main/assets/` entero, y no una lista. Aqui viven
       # `index.html` y `bridge.js`, que se COPIAN al paquete del frontend.
       #
       # MEDIDO: arreglar `index.html` (para añadir `type="module"`) no disparo
@@ -56,7 +56,7 @@ on:
       #
       # Un filtro que no cubre un fichero no falla: el workflow no corre y el
       # artefacto que se baja el de antes.
-      - 'android/app/src/main/assets/web/**'
+      - 'android/app/src/main/assets/**'
       - 'frontend/**'
       - 'editor/**'
       - 'node-graph/**'

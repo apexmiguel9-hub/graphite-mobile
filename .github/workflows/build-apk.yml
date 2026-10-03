@@ -23,7 +23,7 @@ on:
       # workflow, y eso no falla —el workflow simplemente no corre y el "verde"
       # que se ve es el de un commit anterior.
       #
-      # MEDIDO: `assets/web/bridge.js` no lo cubría el filtro, porque se añadió
+      # MEDIDO: `assets/bridge.js` no lo cubría el filtro, porque se añadió
       # el fichero antes que la regla. Arreglar el shim daba un commit que no
       # compilaba el APK, y tocaba los commits siguientes en un orden que ya no
       # correspondía con el código.
@@ -317,13 +317,13 @@ jobs:
           echo "  frontend usado: $RUN_ID ($RUN_SHA)"
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
 
-      - name: Download the frontend into assets/web
+      - name: Download the frontend into assets
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ steps.fe.outputs.run_id }}
         run: |
           set -euo pipefail
-          DEST=android/app/src/main/assets/web
+          DEST=android/app/src/main/assets
           rm -rf "$DEST"
           mkdir -p "$DEST"
           gh run download "$RUN_ID" -R "$GITHUB_REPOSITORY" \
@@ -345,7 +345,7 @@ jobs:
           fi
           echo "  tarball: $TARBALL ($(stat -c%s "$TARBALL") bytes)"
           tar -xzf "$TARBALL" -C "$DEST"
-          echo "=== assets/web ==="
+          echo "=== assets/ ==="
           ls -la "$DEST"
           # El shim y el index.html TIENEN que estar: sin el shim el wasm no
           # encuentra `sendNativeMessage` y la UI no arranca. Verde igual.
@@ -377,16 +377,23 @@ jobs:
           #
           # El bundle lo pide por `/assets/<nombre>.wasm`. Ese prefijo NO se
           # sustituye nunca: es el que registra `WebViewAssetLoader`, que lo
-          # traduce a la carpeta `assets/web/` del APK. Por eso el wasm va PLANO en
-          # `$DEST`, no en un subdirectorio.
+          # traduce a la RAIZ de `assets/`, que es lo unico que
+          # `AssetsPathHandler` puede hacer: solo tiene el constructor de un
+          # argumento. Leidos los constructores del `webkit-1.12.1.aar`:
           #
-          # MEDIDO, dos veces, y las dos por lo mismo:
-          #  - con el wasm en `assets/web/assets/`, el handler no lo encontraba:
+          #   AssetsPathHandler(Context)
+          #   AssetsPathHandler(AssetHelper)   <- interno de androidx
+          #
+          # Por eso la UI vive en `assets/` y no en `assets/web/`. Y como el
+          # bundle pide por rutas ABSOLUTAS, todo tiene que estar en esa misma
+          # raiz: `/assets/glue.wasm`, `/assets/thumbnail-*.png`.
+          #
+          # MEDIDO, dos veces, por el mismo motivo:
+          #  - con el wasm un nivel mas abajo, el handler no lo encontraba:
           #      Failed to execute 'compile' on 'WebAssembly': HTTP status code
           #      is not ok
-          #  - con el prefijo `/assets/` sustituido por `glue.wasm`, la ruta
-          #    quedaba RELATIVA y resolvia contra la pagina actual, no contra el
-          #    handler:
+          #  - con el prefijo `/assets/` sustituido, la ruta quedaba RELATIVA y
+          #    resolvia contra la pagina, no contra el handler:
           #      ::error::el bundle ya no cita /assets/glue.wasm
           #
           # Lo que se cambia es el NOMBRE con hash; el prefijo se queda.

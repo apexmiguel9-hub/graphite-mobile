@@ -129,7 +129,7 @@ class WebUI {
             //
             // Con el prefijo apuntando a la carpeta de la UI, `/assets/...` cae
             // justo dentro. Y la pagina se carga de `/assets/index.html`.
-            .addPathHandler(PREFIJO_WEB, AssetsPathHandler(context, "web"))
+            .addPathHandler(PREFIJO_WEB, AssetsPathHandler(context))
             .build()
 
         webViewClient = object : WebViewClient() {
@@ -402,12 +402,12 @@ class WebUI {
         const val HOST = "appassets.androidplatform.net"
 
         /**
-         * Prefijo del handler de assets. `/assets/` -> `assets/web/` del APK.
+         * Prefijo del handler de assets. `/assets/` -> `assets/` del APK.
          *
-         * MEDIDO: el prefijo del handler ES la carpeta que sirve. El bundle pide
-         * `/assets/glue.wasm` y `/assets/thumbnail-*.png` por ruta absoluta, asi
-         * que todo lo que pida asi tiene que estar en la carpeta a la que apunta
-         * este prefijo.
+         * MEDIDO: `AssetsPathHandler` solo tiene el constructor de un argumento,
+         * que sirve la raiz de `assets/`. No hay forma de pedirle un
+         * subdirectorio. Por eso la UI vive en la raiz: es la unica disposicion
+         * en la que las rutas ABSOLUTAS del bundle caen dentro del prefijo.
          */
         const val PREFIJO_WEB = "/assets/"
 
