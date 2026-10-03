@@ -388,30 +388,36 @@ jobs:
           fi
 
           # ------------------------------------------------------------------
-          # EL WASM, Y POR QUÉ VA EN `assets/` Y NO EN LA RAÍZ.
+          # EL WASM, PLANO, EN LA MISMA CARPETA QUE EL INDEX.
           #
-          # MEDIDO: dentro del bundle, la referencia al wasm queda como
+          # MEDIDO, dos veces:
           #
-          #     /assets/glue.wasm
+          #  1. Con `file://` la referencia del bundle es `/assets/glue.wasm`, con
+          #     ruta ABSOLUTA, y el wasm en `assets/web/glue.wasm` no se encontraba:
+          #     `file://` resuelve `/` a la raiz del sistema de ficheros.
           #
-          # con ruta ABSOLUTA, no `glue.wasm`. Con `file://` eso resuelve a la
-          # raiz del sistema de ficheros, y el wasm no se carga nunca: el
-          # frontend se queda esperando el modulo y no aparece nada.
+          #  2. Con `WebViewAssetLoader` el prefijo `/assets/` del handler se
+          #     traduce a UNA CARPETA —`assets/web/`—, asi que `/assets/glue.wasm`
+          #     se sirve desde `assets/web/glue.wasm`. Con el wasm en un
+          #     subdirectorio `assets/` de ahi, el handler no lo encontraba:
           #
-          # Por eso va en `$OUT/assets/glue.wasm`. La app sirve el frontend desde
-          # `file:///android_asset/web/`, así que `/assets/...` cae dentro de
-          # `android_asset/web/assets/...` y coincide.
+          #       error al cargar -1 en .../assets/glue.wasm
+          #       Failed to execute 'compile' on 'WebAssembly': HTTP status code
+          #       is not ok
           #
-          # El nombre con hash va dentro del glue JS, así que hay que reescribir
-          # las dos formas que aparecen.
+          # LA REGLA: todo lo que el bundle pida por ruta absoluta tiene que estar
+          # en la MISMA carpeta que el index, porque el prefijo `/assets/` del
+          # handler se traduce a esa carpeta. Las miniaturas tambien.
+          #
+          # El nombre con hash va dentro del glue JS, asi que hay que reescribir
+          # las dos formas en que aparece.
           # ------------------------------------------------------------------
           WASM=$(find frontend/dist/assets -name 'graphite_wasm_wrapper_bg-*.wasm' | head -1)
           test -n "$WASM" || { echo "::error::no hay wasm del frontend"; exit 1; }
           echo "  wasm: $(basename "$WASM")"
-          mkdir -p "$OUT/assets"
-          cp "$WASM" "$OUT/assets/glue.wasm"
+          cp "$WASM" "$OUT/glue.wasm"
           WASMBASE=$(basename "$WASM")
-          sed -i "s|assets/${WASMBASE}|assets/glue.wasm|g" "$OUT/bundle.js"
+          sed -i "s|assets/${WASMBASE}|glue.wasm|g" "$OUT/bundle.js"
           sed -i "s|${WASMBASE}|glue.wasm|g" "$OUT/bundle.js"
 
           cp frontend/dist/index.html "$OUT/index.dist.html"
@@ -465,7 +471,7 @@ jobs:
           echo "  miniaturas en dist/assets: $MINIATURAS"
           test "$MINIATURAS" -gt 0 \
             || { echo "::error::no hay miniaturas; el menu de welcome saldra vacio"; exit 1; }
-          cp frontend/dist/assets/thumbnail-*.png "$OUT/assets/"
+          cp frontend/dist/assets/thumbnail-*.png "$OUT/"
 
           # Y el resto de `assets/` NO se copia. Al hacerlo aparecia
           #   assets/assets/graphite_wasm_wrapper_bg-<hash>.wasm
@@ -503,8 +509,16 @@ jobs:
           # deja el `sed` de arriba. Se comprueba esa, literal.
           grep -q 'assets/glue\.wasm' "$OUT/bundle.js" \
             || { echo "::error::el bundle ya no cita /assets/glue.wasm"; exit 1; }
-          test -f "$OUT/assets/glue.wasm" \
-            || { echo "::error::no existe assets/glue.wasm en el paquete"; exit 1; }
+          # PLANO: el prefijo `/assets/` del handler apunta a esta carpeta, asi que
+          # `/assets/glue.wasm` se sirve desde `$OUT/glue.wasm`. MEDIDO: con un
+          # subdirectorio `assets/`, el wasm no se encontraba y el frontend
+          # moria con "HTTP status code is not ok".
+          test -f "$OUT/glue.wasm" \
+            || { echo "::error::no existe glue.wasm en la raiz del paquete"; exit 1; }
+          # Y las miniaturas, que tambien se piden por ruta absoluta.
+          for m in "$OUT"/thumbnail-*.png; do
+            test -e "$m" || { echo "::error::no hay miniaturas"; exit 1; }
+          done
 
           # Y que el nombre con hash no quede por ningun sitio: si queda, el sed
           # no hizo su trabajo en alguna de las dos formas que cubre, y el

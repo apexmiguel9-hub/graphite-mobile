@@ -34,6 +34,25 @@
 	</head>
 	<body>
 		<!--
+			EL CSS. MEDIDO: sin este `<link>`, la UI arranca pero SIN estilos.
+
+			Vite saca el CSS del bundle y lo mete aquí, en el `index.html` que él
+			genera. Pero este `index.html` es NUESTRO, versionado en el repo, y
+			reemplaza al de vite. Con lo cual el `<link>` se queda en el fichero
+			de vite que nadie mira, y el CSS no se carga nunca.
+
+			No hay forma de que el bundle lo pida: no lo menciona. Se comprueba
+			buscando `style.css` dentro del bundle y no aparece (lo que aparece es
+			`e.style.cssText`, que es otra cosa).
+
+			`href="./style.css"` es RELATIVO a propósito: la pagina se sirve en
+			`.../assets/web/index.html`, asi que resuelve a `.../assets/web/style.css`,
+			que es donde lo deja el workflow. Las rutas ABSOLUTAS del bundle
+			(`/assets/glue.wasm`) las resuelve el `WebViewAssetLoader`.
+		-->
+		<link rel="stylesheet" href="./style.css" />
+
+		<!--
 			El bundle que produce `vite build --mode native` es
 			`assets/index-<hash>.js`, renombrado a `bundle.js` por el workflow.
 			Ese workflow lo reescribe con el nombre real al preparar los assets,
@@ -47,6 +66,9 @@
 			usa `import.meta.url` para resolver el `.wasm` con `new URL(...)`, que
 			es justo el mecanismo con el que encuentra su propio binario. Un
 			`<script>` normal no puede usar `import.meta`.
+
+			Con `WebViewAssetLoader` los módulos ya no dan problemas de CORS, porque
+			la página se sirve por `https` con un origen real.
 		-->
 		<script type="module" src="./bundle.js"></script>
 	</body>

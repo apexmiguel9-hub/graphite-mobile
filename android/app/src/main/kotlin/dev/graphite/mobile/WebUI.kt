@@ -116,7 +116,20 @@ class WebUI {
             // `setDomain` espera SOLO el host, sin esquema. Ponerlo con
             // `https://` ahi no funciona y el error no lo explica.
             .setDomain(HOST)
-            .addPathHandler("/assets/", AssetsPathHandler(context))
+            // `/assets/` -> `assets/web/` del APK. El prefijo del handler ES la
+            // carpeta: `/assets/glue.wasm` se sirve desde `assets/web/glue.wasm`.
+            //
+            // MEDIDO: con el handler en `/assets/` -> `assets/` (la raiz), el wasm
+            // no se encontraba, porque el bundle lo pide por ruta ABSOLUTA y
+            // estaba un nivel mas abajo:
+            //
+            //   error al cargar -1 en .../assets/glue.wasm
+            //   Failed to execute 'compile' on 'WebAssembly': HTTP status code
+            //   is not ok
+            //
+            // Con el prefijo apuntando a la carpeta de la UI, `/assets/...` cae
+            // justo dentro. Y la pagina se carga de `/assets/index.html`.
+            .addPathHandler(PREFIJO_WEB, AssetsPathHandler(context, "web"))
             .build()
 
         webViewClient = object : WebViewClient() {
@@ -273,7 +286,7 @@ class WebUI {
         // El path handler mapea `/assets/` → `assets/` del APK, asi que el
         // `assets/` del APK tiene que contener lo que el bundle pide. Por eso el
         // `.wasm` y las miniaturas van en `assets/web/assets/`.
-        loadUrl("$DOMINIO$PREFIJO" + "index.html")
+        loadUrl("$DOMINIO$PREFIJO_WEB" + "index.html")
     }
 
     /**
@@ -388,8 +401,15 @@ class WebUI {
          */
         const val HOST = "appassets.androidplatform.net"
 
-        /** Donde vive la UI dentro de los assets. */
-        const val PREFIJO = "/assets/web/"
+        /**
+         * Prefijo del handler de assets. `/assets/` -> `assets/web/` del APK.
+         *
+         * MEDIDO: el prefijo del handler ES la carpeta que sirve. El bundle pide
+         * `/assets/glue.wasm` y `/assets/thumbnail-*.png` por ruta absoluta, asi
+         * que todo lo que pida asi tiene que estar en la carpeta a la que apunta
+         * este prefijo.
+         */
+        const val PREFIJO_WEB = "/assets/"
 
         /**
          * El shim, embebido en el binario y no cargado como fichero.
