@@ -440,19 +440,17 @@ jobs:
           grep -q 'SHIM_PLACEHOLDER' "$KOTLIN" \
             || { echo "::error::$KOTLIN no tiene el marcador SHIM_PLACEHOLDER"; exit 1; }
 
-          python3 - "$KOTLIN" <<'PYEOF'
-import sys
-ruta = sys.argv[1]
-shim = open('android/app/src/main/assets/web/bridge.js').read()
-# Kotlin: los raw strings cortan en \"\"\". No hay en el shim, pero por si acaso.
-shim = shim.replace('"""', '\\\\"\\\\"\\\\"')
-texto = open(ruta).read()
-n = texto.count('"""SHIM_PLACEHOLDER"""')
-if n != 1:
-    raise SystemExit(f"::error::se esperaba 1 marcador, hay {n}")
-abrir(a=ruta, w=open(ruta, 'w')).write(texto.replace('"""SHIM_PLACEHOLDER"""', '"""\n' + shim + '\n"""'))
-print(f"  shim incrustado: {len(shim)} bytes")
-PYEOF
+          # El Python va en un fichero aparte, NO en un heredoc.
+          #
+          # MEDIDO: dentro del `run: |` de YAML, el heredoc `<<'PYEOF'` es
+          # INDENTADO con el bloque, y sus lineas empiezan por 10 espacios. YAML
+          # los lee como un mapeo del paso, no como texto, y el workflow entero
+          # deja de ser valido. El sintoma es desconcertante: GitHub no crea
+          # ningun job (`total_count: 0`), asi que el run aparece como fallido
+          # sin log y sin ningun paso al que mirar. Por eso hay un
+          # `yaml.safe_load` en los tres workflows antes de empujar: un YAML
+          # invalido se ve en local en un segundo.
+          python3 android/scripts/embed-shim.py "$KOTLIN"
           grep -q 'SHIM_PLACEHOLDER' "$KOTLIN" \
             && { echo "::error::el marcador no se sustituyo"; exit 1; }
           grep -q 'window.sendNativeMessage' "$KOTLIN" \
