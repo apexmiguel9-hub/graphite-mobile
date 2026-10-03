@@ -184,6 +184,9 @@ pub struct Engine {
     /// se dibuja algo, el grafo no se esta invalidando.
     pub grafo_con_textura: u32,
 
+    /// Ultima colocacion que se logueo, para no repetirla cada frame.
+    pub ultima_colocacion_logueada: Option<(f64, f64, f64, f64)>,
+
     /// Ultimo tamaño de la textura que devolvio el grafo, para detectar cambios.
     pub ultimo_tamano_textura: (u32, u32),
 
@@ -317,6 +320,7 @@ impl Engine {
             grafo_sin_correr: 0,
             grafo_sin_textura: 0,
             grafo_con_textura: 0,
+            ultima_colocacion_logueada: None,
             ultimo_tamano_textura: (0, 0),
             lienzo: None,
             descartados_por_tipo: std::collections::HashMap::new(),
@@ -467,7 +471,11 @@ impl Engine {
             ]),
         );
 
-        if self.frames <= 3 {
+        // El log solo cuando los numeros cambian, no cada frame: ahora esta
+        // funcion se llama en cada frame y esto llenaria el log.
+        let numeros = (offset_x, offset_y, scale_x, scale_y);
+        if self.frames <= 3 || Some(numeros) != self.ultima_colocacion_logueada {
+            self.ultima_colocacion_logueada = Some(numeros);
             log::info!(
                 "[{}] colocacion del lienzo: offset=({:.4}, {:.4}) scale=({:.4}, {:.4}) lienzo={:?} superficie={:?}",
                 TAG,
@@ -1311,6 +1319,24 @@ impl Engine {
             // Solo en el frame 0, antes de que el motor haya renderizado.
             None => self.fallback.clone(),
         };
+
+        // ------------------------------------------------------------------
+        // EL UNIFORM SE ESCRIBE CADA FRAME, NO SOLO CUANDO ALGO CAMBIA.
+        //
+        // MEDIDO, y era un fallo de diseño mio. `actualizar_colocacion()` se
+        // llamaba TRES veces en toda la vida de la app —al arrancar, al
+        // reconfigurar la superficie y al recibir `UpdateViewportPhysicalBounds`—
+        // asi que el campo `modo` solo llegaba al buffer en esos momentos.
+        //
+        // Consecuencia medida en el movil: `window.GraphiteNative.debug(1)` no
+        // cambiaba NADA en pantalla. Ni el modo 1 (UV, que deberia dar un
+        // degradado rojo-verde) ni el 2 (alfa). La instrumentacion de
+        // diagnostico no funcionaba, y por eso no servia para nada.
+        //
+        // Son 32 bytes por frame. Es ruido, y a cambio hace imposible toda esta
+        // familia de fallos: si el buffer SIEMPRE se escribe desde el estado
+        // actual, no puede quedar desfasado.
+        self.actualizar_colocacion();
 
         let bind_group = self.context.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("blit-bg"),
