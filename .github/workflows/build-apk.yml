@@ -275,11 +275,34 @@ jobs:
           done
           echo "  motor verificado dentro"
 
-      - name: Build APK
+      # ------------------------------------------------------------------
+      # COMPILAR KOTLIN, SIN ENSAMBLAR.
+      #
+      # MEDIDO: `assembleDebug` tardaba 30-40 s y la mitad de ese tiempo es
+      # empaquetar y firmar un APK de 62 MB que no se va a mirar cuando lo que
+      # falla es un error de sintaxis de Kotlin. Separado, el error de Kotlin
+      # aparece en 25 s y el log es el del compilador y nada más.
+      #
+      # `compileDebugKotlin` es exactamente el mismo compilador, con los mismos
+      # fuentes: no puede pasar algo que compile aquí y falle después.
+      # ------------------------------------------------------------------
+      - name: Compile Kotlin (fail fast)
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew --no-daemon assembleDebug
+          ./gradlew --no-daemon compileDebugKotlin 2>&1 | tee /tmp/kotlin.log || {
+            echo "::group::errores de Kotlin"
+            # Los errores de Kotlin vienen en lineas `e: fichero.kt:12:3 ...`.
+            # Sin el `2>&1` no salen: Gradle las escribe por stderr y el pipe se
+            # las come.
+            grep -E "^e: |\.kt:[0-9]+:[0-9]+" /tmp/kotlin.log || true
+            echo "::endgroup::"
+            exit 1
+          }
+
+      - name: Assemble the APK
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug
 
       # El `.so` tiene que estar DENTRO del APK. Un `assembleDebug` que se pasa
       # sin el `.so` compila igual de bien y deja una app que muere al arrancar.
