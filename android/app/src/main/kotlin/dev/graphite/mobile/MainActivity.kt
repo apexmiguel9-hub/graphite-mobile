@@ -225,5 +225,51 @@ class MainActivity : Activity() {
 // resultado es un `UnsatisfiedLinkError` en tiempo de ejecución, no un error de
 // compilación. El mismo nombre tiene que estar en el `#[export_name]` de Rust.
 external fun nativeBoot(surface: android.view.Surface): String
+
+/** La ventana cambio de tamano. Reconfigura superficie y viewport. */
 external fun nativeSurfaceSize(width: Int, height: Int)
+
+/** Un frame. Devuelve el estado en texto, para el log. */
 external fun nativeFrame(): String
+
+// ------------------------------------------------------------------
+// LAS CINCO FUNCIONES NATIVAS ESTAN AQUI, Y ESTO NO ES COSA SUELTA.
+//
+// MEDIDO en el movil, con el frontend ya cargando y llamando al puente:
+//
+//   java.lang.UnsatisfiedLinkError: No implementation found for
+//     dev.graphite.mobile.WebUIKt.nativeMessage(java.lang.String)
+//   (tried Java_dev_graphite_mobile_WebUIKt_nativeMessage)
+//
+// El simbolo JNI se compone de PAQUETE + FICHERO + FUNCION:
+//
+//   Java_dev_graphite_mobile_<FICHERO>Kt_<funcion>
+//
+// Las dos funciones de la UI estaban declaradas en `WebUI.kt`, asi que Kotlin
+// buscaba el simbolo con `WebUIKt`, y Rust lo exportaba con `MainActivityKt`.
+//
+// Lo peor no es el fallo: es que el CI daba VERDE. El check miraba el nombre de
+// las funciones pero daba por hecho el `MainActivityKt` de ahi. Las tres
+// primeras estaban en `MainActivity.kt` y coincidian; las dos nuevas no, y
+// nadie se dio cuenta hasta que el movil las llamo.
+//
+// Que las cinco esten juntas, y el check derive el nombre del fichero de verdad
+// (`android/scripts/check-jni-symbols.py`), hace que esto no vuelva a pasar por
+// añadir una función en el fichero que toque.
+//
+// Y NO pueden ser `private`: Kotlin manglea los nombres de las funciones
+// `internal`, y el resultado es un `UnsatisfiedLinkError` en tiempo de ejecucion,
+// no un error de compilacion.
+// ------------------------------------------------------------------
+
+/** wasm -> nativo: un mensaje del frontend en base64. Base64, o null. */
+external fun nativeMessage(base64: String): String?
+
+/**
+ * El frontend ha terminado de arrancar. Devuelve base64 con lo que el motor
+ * conteste, o null.
+ *
+ * El tipo tiene que COINCIDIR con el `jstring` que devuelve el `#[export_name]`
+ * de Rust, y no con un `Unit`.
+ */
+external fun nativeInitialized(width: Int, height: Int): String?

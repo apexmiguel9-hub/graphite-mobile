@@ -566,22 +566,29 @@ jobs:
           # Por eso se comprueban los cinco contra la lista de `external fun` del
           # código Kotlin, y no contra una lista escrita aquí que se quedaría
           # corta en la próxima función nueva.
-          MAPEOS=0
-          for sym in $(grep -ho 'external fun native[A-Za-z]*' \
-                         android/app/src/main/kotlin/dev/graphite/mobile/*.kt \
-                       | sed 's/external fun //'); do
-            if grep -qa "Java_dev_graphite_mobile_MainActivityKt_$sym" "$SO"; then
-              echo "  OK  $sym"
-              MAPEOS=$((MAPEOS + 1))
-            else
-              echo "::error::el APK lleva un .so SIN el simbolo $sym"
-              echo "::error::Kotlin declara 'external fun $sym' pero Rust no lo exporta:"
-              echo "::error::  falta #[export_name = \"Java_dev_graphite_mobile_MainActivityKt_$sym\"]"
-              MAPEOS=-1
-            fi
-          done
-          test "$MAPEOS" -gt 0 || { echo "::error::faltan simbolos JNI en el .so"; exit 1; }
-          echo "  $MAPEOS/5 simbolos JNI presentes"
+          # ------------------------------------------------------------------
+          # LOS SIMBOLOS JNI, Y EL FICHERO DEL QUE SALEN.
+          #
+          # El simbolo se compone de PAQUETE + FICHERO + FUNCION:
+          #
+          #   Java_dev_graphite_mobile_<FICHERO>Kt_<funcion>
+          #
+          # MEDIDO: `nativeMessage` estaba declarada en `WebUI.kt`, asi que Kotlin
+          # buscaba `WebUIKt` y Rust exportaba `MainActivityKt`. En el movil:
+          #
+          #   java.lang.UnsatisfiedLinkError: No implementation found for
+          #     dev.graphite.mobile.WebUIKt.nativeMessage(java.lang.String)
+          #
+          # Y el CI daba VERDE, porque este check miraba el NOMBRE de las
+          # funciones y daba por hecho el `MainActivityKt` de ahi. Las tres
+          # primeras estaban en `MainActivity.kt` y coincidian; las dos nuevas
+          # no, y nadie lo vio hasta que el movil las llamo.
+          #
+          # El script deriva el nombre del FICHERO de verdad, asi que anadir una
+          # funcion en el fichero que toque ya no puede colarse.
+          # ------------------------------------------------------------------
+          python3 android/scripts/check-jni-symbols.py \
+            "$SO" android/app/src/main/kotlin
 
           # La Activity también, y con la herramienta CORRECTA.
           #
