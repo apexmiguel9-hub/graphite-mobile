@@ -420,77 +420,19 @@ jobs:
           # conoce). Se copia desde el repo.
           cp android/app/src/main/assets/web/bridge.js "$OUT/bridge.js"
           cp android/app/src/main/assets/web/index.html "$OUT/index.html"
-          # `WebUI.kt` va en el paquete porque `build-apk` lo copia encima del
-          # `.kt` del repo antes de compilar. Va FUERA de `assets/`, que es lo que
-          # se empaqueta en el APK: meter ahi un `.kt` que no usa nadie solo
-          # engorda el APK.
-          mkdir -p "$OUT/shim"
-          cp android/app/src/main/kotlin/dev/graphite/mobile/WebUI.kt "$OUT/shim/WebUI.kt"
-
-          # ------------------------------------------------------------------
-          # INCRUSTAR EL SHIM EN EL KOTLIN.
+          # NO se lleva el `WebUI.kt`.
           #
-          # MEDIDO: cargarlo con `document.createElement('script')` y un `src` a
-          # `file://` falla con CORS, porque una pagina `file://` tiene origen
-          # `null` y cualquier peticion a otro fichero de disco es cross-origin
-          # contra origen nulo. `evaluateJavascript` no hace peticiones, asi que
-          # el shim viaja dentro del propio JS evaluado.
+          # MEDIDO: se llevaba, y `build-apk` lo copiaba encima del `.kt` del
+          # repo antes de compilar. Con un frontend de un commit ANTERIOR —que es
+          # lo que pasa cuando el commit no toca el frontend— eso REVERTIA el
+          # Kotlin nuevo con el viejo, y el APK fallaba con errores de hace tres
+          # commits:
           #
-          # Por eso bridge.js se versiona como `.js` —para poder editarlo y
-          # revisarlo como JavaScript— y se incrusta en el `.kt` al empaquetar.
-          # El fichero versionado es la fuente; el `.kt` lleva un marcador que se
-          # sustituye aqui, para que no haya dos copias que se puedan divergir.
-          # ------------------------------------------------------------------
-          # El shim incrustado viaja como un `.kt` APARTE, no dentro del
-          # `WebUI.kt` del repo.
+          #   Unresolved reference 'assetLoader'
           #
-          # MEDIDO: se incrustaba dentro de `WebUI.kt` en la copia de trabajo de
-          # este workflow, pero `WebUI.kt` no se empuja nunca, asi que el
-          # artefacto no lo contenia y `build-apk` compilaba el `.kt` del checkout
-          # con el marcador intacto. El APK salia valido y sin shim.
-          KOTLIN=android/app/src/main/kotlin/dev/graphite/mobile/WebUI.kt
-          test -f "$KOTLIN" || { echo "::error::no existe $KOTLIN"; exit 1; }
-          grep -q 'SHIM_PLACEHOLDER' "$KOTLIN" \
-            || { echo "::error::$KOTLIN no tiene el marcador SHIM_PLACEHOLDER"; exit 1; }
-
-          # Se incrusta en una COPIA, y la copia es lo que viaja.
-          cp "$KOTLIN" "$OUT/shim/WebUI.kt"
-
-          # El Python va en un fichero aparte, NO en un heredoc.
-          #
-          # MEDIDO: dentro del `run: |` de YAML, el heredoc `<<'PYEOF'` es
-          # INDENTADO con el bloque, y sus lineas empiezan por 10 espacios. YAML
-          # los lee como un mapeo del paso, no como texto, y el workflow entero
-          # deja de ser valido. El sintoma es desconcertante: GitHub no crea
-          # ningun job (`total_count: 0`), asi que el run aparece como fallido
-          # sin log y sin ningun paso al que mirar. Por eso hay un
-          # `yaml.safe_load` en los tres workflows antes de empujar: un YAML
-          # invalido se ve en local en un segundo.
-          python3 android/scripts/embed-shim.py "$OUT/shim/WebUI.kt"
-
-          # ------------------------------------------------------------------
-          # QUE LA INCRUSTACION SE HAYA HECHO, y sobre la COPIA.
-          #
-          # MEDIDO (dos veces):
-          #  - se comprobaba contra `$KOTLIN`, el fichero del repo, que SIEMPRE
-          #    tiene el marcador porque nunca se empuja. El check miraba el
-          #    sitio equivocado y fallaba siempre.
-          #  - el marcador se buscaba con la PALABRA suelta, que tambien aparece
-          #    en el comentario que explica el mecanismo. Ese comentario se queda
-          #    en el fichero, asi que el check se rechazaba a si mismo.
-          #
-          # Ahora: sobre la copia, y con el delimitador entero.
-          # ------------------------------------------------------------------
-          DELIM=$(python3 -c "print(chr(34) * 3 + 'SHIM_PLACEHOLDER' + chr(34) * 3)")
-          if grep -qF "$DELIM" "$OUT/shim/WebUI.kt"; then
-            echo "::error::el marcador sin sustituir sigue en WebUI.kt"
-            exit 1
-          fi
-          for g in 'window.sendNativeMessage' 'window.initializeNativeCommunication'; do
-            grep -q "$g" "$OUT/shim/WebUI.kt" \
-              || { echo "::error::el shim incrustado no define $g"; exit 1; }
-          done
-          echo "  OK  bridge.js incrustado en WebUI.kt (3 globals presentes)"
+          # El shim no tiene nada que ver con el frontend: `bridge.js` esta en el
+          # repo y el incrustado lo hace `build-apk`, que es quien tiene el
+          # `WebUI.kt` de este commit.
 
           # `demo-artwork/`: los .graphite que el frontend puede abrir por URL.
           if [ -d frontend/dist/demo-artwork ]; then

@@ -368,43 +368,6 @@ jobs:
           # La UI no aparece y no hay ningun error de compilacion. Se comprueba
           # el artefacto FINAL, que es lo que va a instalar el movil.
           # ------------------------------------------------------------------
-          # ------------------------------------------------------------------
-          # EL SHIM INCRUSTADO.
-          #
-          # MEDIDO: el `WebUI.kt` del checkout SIEMPRE tiene el marcador
-          # `SHIM_PLACEHOLDER`, porque el marcador se sustituye en la copia de
-          # trabajo de `build-frontend` y esa copia no se empuja. Este workflow
-          # comprueba el `.kt` equivocado y falla siempre.
-          #
-          # El shim incrustado viaja en el artefacto del frontend, como un `.kt`
-          # aparte. Este workflow lo COPIA encima del `WebUI.kt` del repo antes de
-          # compilar, y despues comprueba que el resultado lo tiene.
-          # ------------------------------------------------------------------
-          DELIM=$(python3 -c "print(chr(34) * 3 + 'SHIM_PLACEHOLDER' + chr(34) * 3)")
-          KT=android/app/src/main/kotlin/dev/graphite/mobile/WebUI.kt
-          EMB="$DEST/shim/WebUI.kt"
-          test -f "$EMB" || { echo "::error::el artefacto no trae shim/WebUI.kt"; exit 1; }
-
-          if grep -qF "$DELIM" "$EMB"; then
-            echo "::error::el WebUI.kt del artefacto tiene el marcador sin sustituir"
-            exit 1
-          fi
-          for g in 'window.sendNativeMessage' 'window.initializeNativeCommunication'; do
-            grep -q "$g" "$EMB" \
-              || { echo "::error::el shim incrustado no define $g"; exit 1; }
-          done
-          # Y se USA ese, no el del repo.
-          cp "$EMB" "$KT"
-          if grep -qF "$DELIM" "$KT"; then
-            echo "::error::tras copiar, el marcador sigue en $KT"
-            exit 1
-          fi
-          echo "  OK  el shim incrustado copiado a WebUI.kt (3 globals presentes)"
-          for g in 'window.sendNativeMessage' 'window.initializeNativeCommunication'; do
-            grep -q "$g" "$KT" \
-              || { echo "::error::el shim incrustado no define $g"; exit 1; }
-          done
-          echo "  OK  el shim va incrustado en el Kotlin"
           SZ=$(stat -c%s "$DEST/bundle.js")
           echo "  bundle.js: $SZ bytes"
           test "$SZ" -gt 100000 \
@@ -498,6 +461,45 @@ jobs:
       # `compileDebugKotlin` es exactamente el mismo compilador, con los mismos
       # fuentes: no puede pasar algo que compile aquí y falle después.
       # ------------------------------------------------------------------
+      # ------------------------------------------------------------------
+      # EL SHIM SE INCRUSTA AQUI, NO EN EL ARTEFACTO DEL FRONTEND.
+      #
+      # MEDIDO, y este es el fallo de diseño más caro de la fase: el `WebUI.kt`
+      # con el shim viajaba en el artefacto de `build-frontend`, y este workflow
+      # lo copiaba encima del `.kt` del repo. Cuando el commit no tocaba el
+      # frontend —la mitad de los commits— se usaba un artefacto de un commit
+      # ANTERIOR, y eso REVERTÍA el Kotlin nuevo con el viejo:
+      #
+      #   Unresolved reference 'assetLoader'
+      #   Unresolved reference 'baseUrl'
+      #   Unresolved reference 'inyectarShim'
+      #
+      # Errores de hace cuatro commits, en un repo donde ya estaban arreglados.
+      # El aviso "el frontend es de OTRO commit" salía y era cierto; lo que no
+      # se veía era que el efecto era REVERTIR código, no usar uno viejo.
+      #
+      # El shim no tiene nada que ver con el frontend: `bridge.js` está en el
+      # repo y el incrustado es cosa del APK. Va en su propio paso, antes de
+      # compilar, y sobre el `WebUI.kt` de ESTE commit.
+      # ------------------------------------------------------------------
+      - name: Embed the shim into WebUI.kt
+        run: |
+          set -euo pipefail
+          KT=android/app/src/main/kotlin/dev/graphite/mobile/WebUI.kt
+          test -f "$KT" || { echo "::error::no existe $KT"; exit 1; }
+          python3 android/scripts/embed-shim.py "$KT"
+
+          DELIM=$(python3 -c "print(chr(34) * 3 + 'SHIM_PLACEHOLDER' + chr(34) * 3)")
+          if grep -qF "$DELIM" "$KT"; then
+            echo "::error::el marcador sin sustituir sigue en $KT"
+            exit 1
+          fi
+          for g in 'window.sendNativeMessage' 'window.initializeNativeCommunication'; do
+            grep -q "$g" "$KT" \
+              || { echo "::error::el shim incrustado no define $g"; exit 1; }
+          done
+          echo "  OK  el shim incrustado en WebUI.kt (3 globals presentes)"
+
       - name: Compile Kotlin (fail fast)
         working-directory: android
         run: |
