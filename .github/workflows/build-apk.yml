@@ -131,6 +131,11 @@ jobs:
         id: so
         env:
           GH_TOKEN: ${{ github.token }}
+          # `SHA` lo usa el `jq` de abajo para buscar el run de ESTE commit.
+          # MEDIDO: sin esto, `set -u` aborta con
+          #   SHA: unbound variable
+          # y el paso muere antes de decir nada útil.
+          SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           REPO="$GITHUB_REPOSITORY"
