@@ -206,16 +206,120 @@ dieron falso.
 
 ---
 
-## 4. La UI: por qué todavía no hay
+## 4. La UI: el mensaje que sale del motor se perdía
 
-La capa de UI falta, y es la parte grande. La app actual es **solo el lienzo**.
+### El síntoma
 
-El frontend de Graphite es una aplicación Svelte de 15.101 líneas. Hay dos caminos:
+Pantalla casi negra, sin un error en el log. El frontend cargaba, el wasm
+arrancaba, y el motor contestaba:
+
+```
+js -> nativo: 28 b64 entrada, 328072 b64 salida
+```
+
+328 KB de respuesta.  Y no: ese número era el tamaño de lo que
+Rust **iba a** devolver, no de lo que llegaba al frontend.
+
+### Cómo se mide, sin gastar un ciclo de CI
+
+El `WebView` publica un socket de DevTools:
+
+```
+/proc/net/unix -> webview_devtools_remote_<pid>
+```
+
+Con `adb forward` se puede ejecutar JavaScript en la página **real del móvil**.
+Eso convierte «la pantalla está negra» en «aquí está el DOM, y aquí está el
+contador». Está en `android/scripts/cdp.py` (cliente WebSocket propio, sin
+dependencias) y es la herramienta de diagnóstico de este proyecto.
+
+Lo que salió:
+
+| Medición | Valor | Qué significa |
+|---|---|---|
+| `document.body.children` | `LINK`, `SCRIPT`, `DIV` | Svelte monta |
+| `.main-window` | 443×984, `opacity: 1` | La interfaz tiene tamaño |
+| `.workspace.children` | **0** | Los paneles no llegan |
+| `receiveNativeMessage` (contador) | **0** | No entra ni un mensaje |
+| `console.error` | ninguno | Ni una queja |
+
+Un `.main-window` con barra de título, barra de estado y el icono de pantalla
+completa dibujado, y todos los paneles vacíos. Ese es el frontend funcionando
+perfectamente y sin que le llegue nada.
+
+### La causa
+
+`frontend/wrapper/src/native_communication.rs`:
+
+```rust
+pub fn send_message_to_cef(message: String) {
+    let array = Uint8Array::from(message.as_bytes());
+    let buffer = array.buffer();
+    func.call1(&JsValue::NULL, &JsValue::from(buffer)).expect("Function call failed");
+}
+```
+
+**Ignora el valor de retorno.** El wasm manda y se olvida: la respuesta vuelve
+por otro camino, `window.receiveNativeMessage(<ArrayBuffer>)`, que en el
+escritorio llama CEF con `execute_java_script`.
+
+El puente de Android devolvía la respuesta como valor de retorno de JNI. Datos
+que salían de Rust, se empacaban en base64, se devolvían… y se descartaban en la
+línea siguiente. Sin excepción, sin aviso, sin rastro: el mejor fallo posible,
+porque todo lo que se puede medir por logcat daba verde.
+
+### Lo que se cambió
+
+Los dos caminos pasan a ser separados, como en upstream:
+
+```
+wasm --sendNativeMessage(ArrayBuffer)-->  bridge.js
+     --@JavascriptInterface--------------->  onMessage
+     --nativeMessage (JNI)---------------->  Rust: dispatch -> COLA
+     <-- null (JNI)                        el wasm lo IGNORA
+
+Rust --nativeDrain (JNI)--> Kotlin --evaluateJavascript-->
+     bridge.js: receiveNativeMessage(ArrayBuffer) --> wasm
+```
+
+- `nativeMessage` y `nativeInitialized` devuelven `null` y **encolan** la
+  respuesta.
+- `nativeDrain` saca **una** por llamada. Kotlin drena en bucle tras cada mensaje
+  del frontend, y también en el bucle de render, que es donde llegan los que el
+  motor produce solo.
+- Entregas grandes troceadas a 128 KB. No es un fallo medido: es no depender de
+  un límite de `evaluateJavascript` que no se ha medido. En el caso normal no
+  trocea nunca, porque los mensajes del frontend miden 28-56 bytes.
+
+`webUI.bombear()` serializa con un `synchronized` para que el hilo del
+JavaScript y el de render no intercalen entregas: un payload partido por la
+mitad es un JSON que no se puede parsear.
+
+### Una idea que era falsa
+
+Antes de esto se llegó a la conclusión de que «la UI de Graphite no se dibuja en
+el DOM, el frontend manda escenas de Vello y hay que componerlas en Rust». Es
+**falso**, y está medido: la interfaz la pinta el DOM. `desktop/ui/` recibe los
+píxeles del DOM en `on_paint` y los sube a una textura.
+
+Lo que sí son escenas de Vello es `UpdateOverlays`: los handles, las anclas y el
+rectángulo de selección **del lienzo**. El escritorio las rasteriza por GPU
+(`render/state.rs:225`) y las compone con el grafo de nodos. Aquí se cuentan y se
+anotan en el log (`overlays=N` en `status()`), pero no se rasterizan: para
+pintarlas hay que saber primero dónde está el lienzo en pantalla, que es lo
+siguiente.
+
+---
+
+## 5. La UI: por qué WebView y no reescribir
+
+La capa de UI es la parte grande. El frontend de Graphite es una aplicación
+Svelte de 15.101 líneas. Hay dos caminos:
 
 | | WebView (frontend Svelte dentro de un `WebView`) | Reescribir en Kotlin/Compose |
 |---|---|---|
 | Volumen | ~1-2k líneas de puente | 15k+ líneas, ~38 lotes |
-| Overlays del lienzo | Vienen gratis (los dibuja el frontend) | Hay que reconstruirlos |
+| Overlays del lienzo | Escenas de Vello ya disponibles | Hay que reconstruirlos |
 | Gestos táctiles | Vienen gratis (`PointerMessage` ya existe) | Hay que traducirlos |
 | Sensación nativa | No | Sí |
 | Riesgo | SVG en WebView sobre un móvil de gama media | El tiempo |
@@ -225,12 +329,38 @@ específico de CEF**. El resto (`wrapper/src/message_dispatcher.rs`,
 `intercept_editor_message.rs`, `intercept_frontend_message.rs`) es Rust agnóstico
 de transporte: lo que hay que reescribir es el transporte, no la lógica.
 
-Antes de nada de eso, el render path tiene que estar limpio. Una UI sobre un
-lienzo que dibuja un triángulo negro no sirve para medir la UI.
+Una medición que salió de este camino y que se habría tardado en ver de otra
+forma: el `.so` del puente **no lleva el motor**. El motor va aparte, en
+`libgraphite_editor.so`, porque el frontend se compila con el feature `native` y
+solo necesita el *dispatcher* (`EditorWrapper.create` no crea ningún `Editor`,
+solo cablea el callback: `editor_wrapper.rs:87`).
 
 ---
 
-## 5. Compilar
+## 6. Herramientas de diagnóstico
+
+Todo lo de este proyecto se ha medido en el móvil. Estas son las herramientas,
+en orden de utilidad:
+
+| | Qué da |
+|---|---|
+| `adb exec-out screencap -p` | Lo que se ve de verdad. Un PNG. |
+| `android/scripts/cdp.py` | Ejecuta JS en la página real del WebView por DevTools. El DOM, los contadores, los errores de consola, capturas. |
+| `adb logcat -d -s GRAPHITE` | El log propio y la consola del WebView (la envuelve `onConsoleMessage`). |
+| `adb logcat -d \| grep -i 'AndroidRuntime\|UnsatisfiedLink'` | Las excepciones de Java, que `onConsoleMessage` no ve. |
+
+Para conectar el puerto de DevTools, que hay que rehacer en cada reinicio porque
+cambia el PID:
+
+```bash
+adb forward tcp:9222 localabstract:webview_devtools_remote_$(adb shell pidof dev.graphite.mobile)
+python3 android/scripts/cdp.py --cuerpo    # qué hay en el DOM
+python3 android/scripts/cdp.py --shot out.png
+```
+
+---
+
+## 7. Compilar
 
 ```bash
 # El motor, para arm64-v8a (tarda ~10 min la primera vez)
@@ -246,7 +376,7 @@ minutos del motor.
 
 ---
 
-## 6. Estado
+## 8. Estado
 
 - [x] Motor compilado para aarch64 y verificado *dentro* del `.so` (el CI
       comprueba símbolos y tamaño, porque un `.so` sin motor pesa 4,95 MB y da
@@ -255,9 +385,14 @@ minutos del motor.
 - [x] `Editor::new` + documento + `run_node_graph()`.
 - [x] **Triángulo negro desaparecido**, con `resizes = 0` y 7.800 frames a 60 fps.
 - [x] Tamaño de superficie correcto y el viewport del motor siguiendo al tamaño.
-- [ ] **Capa de UI** — el siguiente paso. Ver §4.
+- [x] **Los cinco símbolos JNI resuelven**, y el check deriva el nombre del
+      fichero de verdad (`android/scripts/check-jni-symbols.py`).
+- [x] **El frontend carga y habla con el motor.** Frontend Svelte compilado en
+      modo nativo: wasm de 271 KB, bundle 444 KB, CSS 99 KB.
+- [x] **La respuesta del motor llega al frontend** (cola + `nativeDrain`). Ver §4.
+- [ ] Ver la interfaz con contenido real. Lo siguiente.
 - [ ] Gestos: traducir eventos de toque a `PointerMessage`.
-- [ ] Overlay del lienzo.
+- [ ] Overlay del lienzo: rasterizar `UpdateOverlays` (escenas de Vello).
 
 ### Los cuatro fallos que solo aparecieron midiendo en el móvil
 

@@ -59,12 +59,7 @@ class MainActivity : Activity() {
             holder.setFormat(PixelFormat.RGBX_8888)
         }
 
-        webUI = WebUI().apply {
-            // Cada mensaje que el motor devuelve al frontend pasa por aquí.
-            // Se hace `post` dentro de `deliver`, así que se puede llamar desde
-            // el hilo de render sin tocar la WebView directamente.
-            onDeliverToWeb = { base64 -> deliver(base64) }
-        }
+        webUI = WebUI()
 
         // Dos capas: la SurfaceView del motor al fondo, y el WebView de la UI
         // encima.
@@ -97,9 +92,21 @@ class MainActivity : Activity() {
         setContentView(root)
     }
 
-    /** Entrega un mensaje del motor al frontend. Seguro desde cualquier hilo. */
-    private fun deliver(base64: String) {
-        webUI.deliver(base64)
+    /**
+     * Saca de la cola de Rust lo que haya pendiente y lo entrega al frontend.
+     * Seguro desde cualquier hilo.
+     *
+     * Lo llama el hilo de render además de [WebUI.GraphiteNative.onMessage], y
+     * hace falta por los dos motivos:
+     *
+     * - El mensaje de entrada solo se responde con el mensaje de salida que
+     *   genera, pero el grafo de nodos produce resultados **después**, cuando ya
+     *   no hay ninguna llamada de Java que los recoja.
+     * - El frontend pide el resto por su cuenta: `initAfterFrontendReady` y los
+     *   layouts salen por el hilo de render, no por el de JavaScript.
+     */
+    private fun bombear() {
+        webUI.bombear()
     }
 
     override fun onResume() {
@@ -148,7 +155,7 @@ class MainActivity : Activity() {
 
     private fun startRendering() {
         if (renderThread != null) return
-        renderThread = RenderThread().also {
+        renderThread = RenderThread({ bombear() }).also {
             it.start()
             Log.i(TAG, "hilo de render arrancado")
         }
@@ -174,7 +181,16 @@ class MainActivity : Activity() {
      * limita a la tasa del display, así que renderizar más rápido solo gasta
      * batería y calor.
      */
-    private class RenderThread : Thread("graphite-render") {
+    private class RenderThread(
+        /**
+         * Vacía la cola de salida del motor hacia el frontend.
+         *
+         * Va como parámetro y no tocando `webUI` desde aquí porque esta clase no
+         * es `inner` y así no necesita ver la Activity: el hilo de render solo
+         * necesita una cosa que hacer por frame.
+         */
+        private val bombear: () -> Unit,
+    ) : Thread("graphite-render") {
         @Volatile
         var running = true
 
@@ -185,6 +201,16 @@ class MainActivity : Activity() {
 
             while (running) {
                 val estado = nativeFrame()
+                // El motor produce mensajes por su cuenta —el grafo de nodos
+                // termina, llegan layouts, el frontend pide redibujar— y no hay
+                // ninguna llamada de Java que los recoja. El hilo de render es
+                // el único sitio donde se pueden coger sin quedárselos en la cola
+                // para siempre.
+                try {
+                    bombear()
+                } catch (e: Exception) {
+                    Log.w(TAG, "fallo al bombear al frontend: ${e.message}")
+                }
                 n++
                 // Los primeros frames y luego uno de cada 120: en logcat hay que
                 // poder ver el arranque sin llenarlo de ruido.
@@ -231,6 +257,23 @@ external fun nativeSurfaceSize(width: Int, height: Int)
 
 /** Un frame. Devuelve el estado en texto, para el log. */
 external fun nativeFrame(): String
+
+/**
+ * Saca UN mensaje de la cola de salida del motor, en base64, o `null`.
+ *
+ * MEDIDO: el wasm **tira el valor de retorno** de `sendNativeMessage`
+ * (`frontend/wrapper/src/native_communication.rs`, `send_message_to_cef`, que
+ * llama a la función y no lee el `call1`). La respuesta tiene que entrar por
+ * `window.receiveNativeMessage`, y en el escritorio la llama CEF. Aquí no hay
+ * CEF, así que Kotlin la inyecta con `evaluateJavascript`.
+ *
+ * Por eso el puente ya no devuelve la respuesta en `nativeMessage`: la encola,
+ * y esta función la va sacando. Con un contador en el movil se vio el tamaño de
+ * la respuesta (328 KB) mientras el contador de `receiveNativeMessage` se
+ * quedaba en **cero**: el dato salía de Rust y se perdía antes de llegar al
+ * frontend, sin un solo error en el log.
+ */
+external fun nativeDrain(): String?
 
 // ------------------------------------------------------------------
 // LAS CINCO FUNCIONES NATIVAS ESTAN AQUI, Y ESTO NO ES COSA SUELTA.

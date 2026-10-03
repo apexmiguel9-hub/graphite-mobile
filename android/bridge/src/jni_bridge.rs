@@ -12,6 +12,9 @@
 //!   el nombre tiene que coincidir exactamente con el `external fun` de Kotlin
 //!   (`MainActivityKt` = el fichero `MainActivity.kt`, functions de nivel superior).
 
+use std::collections::VecDeque;
+use std::sync::Mutex;
+
 use jni::objects::{JClass, JObject, JString};
 use jni::sys::{jint, jstring};
 use jni::JNIEnv;
@@ -19,7 +22,7 @@ use jni::JNIEnv;
 use crate::{Engine, TAG};
 
 /// Una sola instancia del motor para toda la app.
-static ENGINE: std::sync::Mutex<Option<Engine>> = std::sync::Mutex::new(None);
+static ENGINE: Mutex<Option<Engine>> = Mutex::new(None);
 
 fn string(env: &mut JNIEnv<'_>, s: String) -> jstring {
     env.new_string(s).map(|x| x.into_raw()).unwrap_or(std::ptr::null_mut())
@@ -118,6 +121,48 @@ pub extern "system" fn native_frame_jni<'local>(
     }
 }
 
+/// Cola de mensajes del motor hacia el frontend.
+///
+/// MEDIDO, y es el bug que hacia que la interfaz saliera vacia:
+///
+///     `frontend/wrapper/src/native_communication.rs`
+///
+/// ```ignore
+/// pub fn send_message_to_cef(message: String) {
+///     let array = Uint8Array::from(message.as_bytes());
+///     func.call1(&JsValue::NULL, &JsValue::from(buffer)).expect("Function call failed");
+/// }
+/// ```
+///
+/// **Ignora el valor de retorno.** El wasm no lee lo que devuelva
+/// `sendNativeMessage`: manda el `ArrayBuffer` y se olvida. La respuesta vuelve
+/// por OTRO camino, que es `window.receiveNativeMessage(<ArrayBuffer>)`, y en el
+/// escritorio lo llama CEF con `execute_java_script`.
+///
+/// Este puente devolvia la respuesta como valor de retorno de JNI, asi que
+/// `js -> nativo: 28 b64 entrada, 328072 b64 salida` era un dato que se
+/// descartaba en la linea siguiente. MEDIDO en el movil con el contador de
+/// `receiveNativeMessage`: **cero** llamadas. El frontend montaba el esqueleto de
+/// la interfaz (`.main-window`, barra de titulo, barra de estado) y se quedaba
+/// con todos los paneles vacios, sin un solo error en el log.
+///
+/// Por eso la respuesta se ENCOLA aqui y Kotlin la drena con `nativeDrain`,
+/// en vez de volver por el retorno.
+///
+/// Cola y no un buffer compartido porque cada mensaje se entrega entero y en
+/// orden: si dos hilos (el del JavaScript y el de render) drained a la vez, un
+/// payload de 328 KB partido en dos haria que el JSON no se pudiera parsear.
+static SALIENTE: Mutex<VecDeque<Vec<u8>>> = Mutex::new(VecDeque::new());
+
+/// Encola un mensaje del motor hacia el frontend. `None` = nada que enviar.
+fn encolar(respuesta: Option<Vec<u8>>) {
+    let Some(respuesta) = respuesta else { return };
+    match SALIENTE.lock() {
+        Ok(mut cola) => cola.push_back(respuesta),
+        Err(_) => log::error!("[{}] la cola de salida está envenenada", TAG),
+    }
+}
+
 /// **Un mensaje del frontend**, en base64.
 ///
 /// El shim JS recibe un `ArrayBuffer` del wasm (vía `window.sendNativeMessage`),
@@ -127,6 +172,10 @@ pub extern "system" fn native_frame_jni<'local>(
 /// Base64 y no los bytes crudos porque por `JNIEnv` los `jbyteArray` hay que
 /// construirlos a mano y liberarlos; con un `String` es una llamada y el
 /// recolector de Java hace el resto.
+///
+/// **Devuelve siempre `null`.** La respuesta no vuelve por aquí sino por
+/// `nativeDrain`, porque el wasm descarta el valor de retorno de
+/// `sendNativeMessage`. Ver [SALIENTE].
 #[export_name = "Java_dev_graphite_mobile_MainActivityKt_nativeMessage"]
 pub extern "system" fn native_message_jni<'local>(
     mut env: JNIEnv<'local>,
@@ -162,14 +211,35 @@ pub extern "system" fn native_message_jni<'local>(
         engine.on_native_message(&datos)
     };
 
-    // `None` significa "no hay nada que contestarle al frontend". Se devuelve un
-    // null, que en Kotlin es `null`, y el shim JS lo trata como "nada que
-    // hacer". Devolver una cadena vacía sería peor: parece una respuesta válida.
-    let Some(respuesta) = respuesta else {
+    // A la cola, no de vuelta. Ver SALIENTE: el wasm tira el valor de retorno.
+    encolar(respuesta);
+    std::ptr::null_mut()
+}
+
+/// Saca UN mensaje de la cola de salida, en base64, o `null` si está vacía.
+///
+/// Lo llama Kotlin (a) justo después de `nativeMessage`, para la respuesta a ese
+/// mensaje, y (b) en el bucle de render, para lo que el motor produzca por su
+/// cuenta (layouts, resultados del grafo de nodos, escenas de overlays).
+///
+/// UNO por llamada y no todos, para que Kotlin pueda ir entregando en orden y
+/// el trabajo quede repartido entre frames en vez de bloquear un hilo con un
+/// payload de 328 KB.
+#[export_name = "Java_dev_graphite_mobile_MainActivityKt_nativeDrain"]
+pub extern "system" fn native_drain_jni<'local>(
+    mut env: JNIEnv<'local>,
+    _class: JClass<'local>,
+) -> jstring {
+    let siguiente = {
+        match SALIENTE.lock() {
+            Ok(mut cola) => cola.pop_front(),
+            Err(_) => None,
+        }
+    };
+    let Some(bytes) = siguiente else {
         return std::ptr::null_mut();
     };
-
-    match base64_encode(&respuesta) {
+    match base64_encode(&bytes) {
         Ok(b64) => match env.new_string(b64) {
             Ok(s) => s.into_raw(),
             Err(e) => {
@@ -186,13 +256,11 @@ pub extern "system" fn native_message_jni<'local>(
 
 /// El frontend ha terminado de arrancar (`window.initializeNativeCommunication`).
 ///
-/// Devuelve base64 con lo que el motor conteste, o null. Se contesta por la
-/// misma vía que `nativeMessage` a propósito: el frontend ya está listo en ese
-/// momento, así que no hace falta un canal de vuelta aparte, y usar el mismo
-/// significa que el shim solo tiene un camino que conocer.
+/// A la cola, como `nativeMessage`, y por la misma razón: el wasm descarta el
+/// valor de retorno de `sendNativeMessage`. Ver [SALIENTE].
 #[export_name = "Java_dev_graphite_mobile_MainActivityKt_nativeInitialized"]
 pub extern "system" fn native_initialized_jni<'local>(
-    mut env: JNIEnv<'local>,
+    _env: JNIEnv<'local>,
     _class: JClass<'local>,
     width: jint,
     height: jint,
@@ -206,22 +274,8 @@ pub extern "system" fn native_initialized_jni<'local>(
         engine.on_initialized(width as u32, height as u32)
     };
 
-    let Some(respuesta) = respuesta else {
-        return std::ptr::null_mut();
-    };
-    match base64_encode(&respuesta) {
-        Ok(b64) => match env.new_string(b64) {
-            Ok(s) => s.into_raw(),
-            Err(e) => {
-                log::error!("[{}] no se pudo crear el string JNI: {:?}", TAG, e);
-                std::ptr::null_mut()
-            }
-        },
-        Err(e) => {
-            log::error!("[{}] fallo al codificar la respuesta: {}", TAG, e);
-            std::ptr::null_mut()
-        }
-    }
+    encolar(respuesta);
+    std::ptr::null_mut()
 }
 
 /// Base64 estándar, sin dependencias.

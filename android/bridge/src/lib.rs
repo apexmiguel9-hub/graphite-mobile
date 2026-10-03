@@ -134,6 +134,10 @@ pub struct Engine {
     /// `DesktopFrontendMessage` de escritorio que aún no se manejan. Ver
     /// `on_native_message`.
     pub messages_descartados: u32,
+    /// Escenas de Vello de overlays que han llegado y NO se rasterizan todavía.
+    /// Solo el log: sirve para distinguir "el frontend no manda escenas" de
+    /// "llegan y no se pintan". Ver `on_native_message`.
+    pub escenas_overlays: u32,
     /// Si el frontend ya ha pedido conexión.
     pub frontend_conectado: bool,
 }
@@ -250,6 +254,7 @@ impl Engine {
             resizes: 0,
             messages_in: 0,
             messages_descartados: 0,
+            escenas_overlays: 0,
             frontend_conectado: false,
         })
     }
@@ -381,12 +386,35 @@ impl Engine {
 
         let respuestas = self.wrapper.dispatch(mensaje);
 
-        // Separar lo que va al frontend de lo que es una petición al escritorio.
+        // ------------------------------------------------------------------
+        // SEPARAR LO QUE VA AL FRONTEND DE LO QUE ES UNA PETICIÓN AL ESCRITORIO.
+        //
+        // MEDIDO, y contra una idea que yo tenía mal. `UpdateOverlays` es una
+        // ESCENA DE VELLO, sí, y en el escritorio la rasteriza Rust para pintar
+        // encima del lienzo los handles, las anclas y el rectángulo de selección.
+        // Pero **la interfaz no va por ahí**: la interfaz la pinta el DOM, que
+        // CEF entrega en `on_paint` como píxeles y el WebView pinta en pantalla.
+        //
+        // Lo que se ve MEDIDO en el móvil, con `Runtime.evaluate` sobre la
+        // página real de DevTools: existe `.main-window` a 443x984, con
+        // `title-bar`, `menu-bar`, `workspace` y `status-bar`, y en la captura
+        // se ve el icono de pantalla completa de la esquina. El esqueleto lo
+        // pintaba el DOM mientras todos los paneles salían vacíos, porque no
+        // llegaba ni un mensaje — eso era otro problema, y estaba en el puente.
+        //
+        // Así que `UpdateOverlays` se cuenta pero no se rasteriza todavía, en vez
+        // de meter un compositor de tres capas sin medir si hacía falta. Los
+        // overlays van sobre el lienzo, y para eso hay que saber dónde está el
+        // lienzo (`UpdateViewportPhysicalBounds`), que es lo siguiente.
+        // ------------------------------------------------------------------
         let mut para_web: Vec<FrontendMessage> = Vec::new();
         let mut otros = 0usize;
         for r in respuestas {
             match r {
                 DesktopFrontendMessage::ToWeb(mut ms) => para_web.append(&mut ms),
+                DesktopFrontendMessage::UpdateOverlays(_) => {
+                    self.escenas_overlays += 1;
+                }
                 _ => otros += 1,
             }
         }
@@ -956,7 +984,7 @@ impl Engine {
     pub fn status(&self) -> String {
         format!(
             "frames={} lienzo={} swapchain_configurado={:?} resizes={} \
-             frontend={} msj_in={} msj_descartados={}",
+             frontend={} msj_in={} msj_descartados={} overlays={}",
             self.frames,
             self.rendered,
             self.configured,
@@ -964,6 +992,7 @@ impl Engine {
             if self.frontend_conectado { "conectado" } else { "NO" },
             self.messages_in,
             self.messages_descartados,
+            self.escenas_overlays,
         )
     }
 }

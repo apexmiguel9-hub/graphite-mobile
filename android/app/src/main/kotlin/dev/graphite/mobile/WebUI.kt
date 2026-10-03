@@ -35,13 +35,25 @@ import androidx.webkit.WebViewAssetLoader.AssetsPathHandler
  * `assets/web/bridge.js`, y este objeto [GraphiteNative] es el otro extremo.
  *
  * ```
- *   wasm --sendNativeMessage(base64)-->  bridge.js
- *        --@JavascriptInterface------->  GraphiteNative.onMessage
- *        --nativeMessage (JNI)--------->  Rust: dispatch -> respuesta
- *        <----------- base64 (JNI) ------
- *        <------- evaluateJavascript --  bridge.js: receiveNativeMessage
- *   wasm
+ *   wasm --sendNativeMessage(ArrayBuffer)-->  bridge.js
+ *        --@JavascriptInterface--------------->  GraphiteNative.onMessage
+ *        --nativeMessage (JNI)---------------->  Rust: dispatch -> cola
+ *        <-- null (JNI)                        el wasm lo IGNORA
+ *
+ *   Rust --nativeDrain (JNI)--> Kotlin --evaluateJavascript-->
+ *        bridge.js: receiveNativeMessage(ArrayBuffer) --> wasm
  * ```
+ *
+ * Los dos caminos son separados a propósito, y esa separación es lo que cuesta
+ * que funcione. El wasm manda y **no espera respuesta**: `send_message_to_cef`
+ * llama a `sendNativeMessage` y tira el valor de retorno. La respuesta vuelve
+ *calling `receiveNativeMessage`. En el escritorio la llama CEF; aquí la inyecta
+ * Kotlin con `evaluateJavascript`.
+ *
+ * MEDIDO: devolver la respuesta por el retorno de JNI no falla, no avisa y no
+ * deja rastro. El log decía `328072 b64 salida` —la respuesta saliendo de
+ * Rust— mientras el contador de `receiveNativeMessage` dentro de la página se
+ * quedaba en cero. La interfaz se montaba a medias y sin un solo error.
  *
  * # Por qué base64
  *
@@ -66,6 +78,12 @@ class WebUI {
 
     /** Se llama con cada mensaje que el nativo devuelve hacia el frontend. */
     var onDeliverToWeb: ((String) -> Unit)? = null
+
+    /** Serializa las entregas entre el hilo del JavaScript y el de render. */
+    private val candadoDeEntrega = Any()
+
+    private var totalEntregado = 0L
+    private var ultimoAnunciado = 0L
 
     /** Estado de la carga, para el log. */
     private var ultimoEstado = ""
@@ -319,21 +337,55 @@ class WebUI {
      * Se llama desde el hilo nativo, **no** desde el principal: `WebView` es
      * de un solo hilo, y tocarla desde el hilo de render peta. Por eso el
      * `post`.
+     *
+     * Y se trocea. `evaluateJavascript` se lleva el JavaScript como UN string, y
+     * aquí llegan lotes grandes: MEDIDO un mensaje de 328.072 bytes de base64
+     * (los layouts iniciales). Un string de medio megabyte por el puente del
+     * WebView es justo el caso límite, y si falla se pierde el mensaje entero
+     * sin que salte ninguna excepción: `deliver` avisaría, pero el frontend
+     * seguiría esperando datos que no llegan.
+     *
+     * El troceo NO es un fallo medido: es un fallo evitado por no depender de un
+     * límite que no se ha medido. En el caso normal no trocea nunca —MEDIDO: los
+     * mensajes que llegan del frontend miden 28-56 bytes de base64—, porque solo
+     * actúa por encima de [TAMANO_TROCEO].
      */
+    private val TAMANO_TROCEO = 128 * 1024
+
+    /** Contador de entregas, para que las piezas de un mensaje no se mezclen. */
+    private var idEntrega = 0
+
     fun deliver(base64: String) {
         val wv = webView
         if (wv == null) {
             Log.w(TAG, "mensaje del nativo sin WebView; descartado")
             return
         }
+
+        val trozos = if (base64.length <= TAMANO_TROCEO) {
+            // Caso normal: una sola llamada, y el shim recibe el mensaje entero.
+            listOf("window.graphiteDeliverToWeb('$base64');")
+        } else {
+            val id = idEntrega++
+            val n = (base64.length + TAMANO_TROCEO - 1) / TAMANO_TROCEO
+            Log.i(TAG, "entrega troceada en $n partes (${base64.length} b64)")
+            (0 until n).map { i ->
+                val trozo = base64.substring(i * TAMANO_TROCEO, minOf((i + 1) * TAMANO_TROCEO, base64.length))
+                "window.graphiteParte($id,$i,$n,'$trozo');"
+            }
+        }
+
         wv.post {
-            try {
-                wv.evaluateJavascript("window.graphiteDeliverToWeb('$base64');", null)
-            } catch (e: Exception) {
-                // Con mensajes grandes, `evaluateJavascript` puede fallar si el
-                // harness está ocupado. Se avisa en vez de morir: perder un
-                // frame de UI es mucho mejor que matar el proceso.
-                Log.e(TAG, "no se pudo entregar al frontend: ${e.message}")
+            for (js in trozos) {
+                try {
+                    wv.evaluateJavascript(js, null)
+                } catch (e: Exception) {
+                    // Con mensajes grandes, `evaluateJavascript` puede fallar si el
+                    // harness está ocupado. Se avisa en vez de morir: perder un
+                    // frame de UI es mucho mejor que matar el proceso.
+                    Log.e(TAG, "no se pudo entregar al frontend: ${e.message}")
+                    return@post
+                }
             }
         }
     }
@@ -353,7 +405,24 @@ class WebUI {
     inner class GraphiteNative {
 
         /**
-         * wasm -> nativo. Devuelve base64, o `null` si no hay respuesta.
+         * wasm -> nativo. **Siempre devuelve `null`.**
+         *
+         * MEDIDO, y no es un detalle: el wasm no lee lo que devuelva esta
+         * función. En `frontend/wrapper/src/native_communication.rs`,
+         * `send_message_to_cef` hace
+         *
+         * ```ignore
+         * func.call1(&JsValue::NULL, &JsValue::from(buffer)).expect("Function call failed");
+         * ```
+         *
+         * y ahí se acaba. El `.expect` se fija en que la llamada NO lance, no en
+         * el valor. Así que devolver la respuesta por aquí la tiraba a la basura:
+         * el log decía `328072 b64 salida` y el contador de
+         * `receiveNativeMessage` en la página se quedaba en cero.
+         *
+         * Lo que sí funciona, y es lo que hace el escritorio, es que la respuesta
+         * entre por `window.receiveNativeMessage`. Así que [bombear] la saca de la
+         * cola de Rust y la inyecta.
          *
          * OJO: esto se llama desde el hilo del JavaScript, no desde el de
          * render. El puente Rust serializa con un `Mutex`, asi que no hay
@@ -363,23 +432,60 @@ class WebUI {
          */
         @JavascriptInterface
         fun onMessage(base64: String): String? {
-            val r = nativeMessage(base64)
-            Log.i(TAG, "js -> nativo: ${base64.length} b64 entrada, ${r?.length ?: 0} b64 salida")
-            return r
+            nativeMessage(base64)
+            val n = bombear()
+            Log.i(TAG, "js -> nativo: ${base64.length} b64 -> $n entregas al web")
+            return null
         }
 
         /** El frontend ha terminado de arrancar.
          *
-         * Devuelve base64 con lo que el motor conteste, o `null`. Es la misma
-         * vía que [onMessage]: el frontend ya está listo, así que en vez de
-         * inventar un canal de vuelta aparte se le entrega la respuesta por el
-         * mismo hilo que acaba de llamar, y el shim la encamina a
-         * `receiveNativeMessage` como cualquier otro mensaje.
+         * A la cola por el mismo camino que [onMessage], y con el mismo motivo:
+         * el valor de retorno se descarta.
          */
         @JavascriptInterface
         fun onInitialized(width: Int, height: Int): String? {
             Log.i(TAG, "el frontend pide conexión: ${width}x$height")
-            return nativeInitialized(width, height)
+            nativeInitialized(width, height)
+            bombear()
+            return null
+        }
+    }
+
+    /**
+     * Saca de la cola de Rust todo lo que haya y lo entrega al frontend.
+     * Devuelve cuántos mensajes han salido.
+     *
+     * Se llama desde los dos sitios que pueden tener respuestas pendientes:
+     *
+     * - al recibir un mensaje del wasm, para su respuesta;
+     * - en el bucle de render, para lo que el motor produzca solo (layouts,
+     *   resultados del grafo, escenas de overlays).
+     *
+     * El `synchronized` no es por el `Mutex` de Rust, que ya serializa: es para
+     * que los dos hilos no intercalen entregas. Si el hilo del JavaScript
+     * sacara un payload de 328 KB a la vez que el de render, las llamadas a
+     * `evaluateJavascript` se podrían cruzar y el JSON llegar partido.
+     */
+    fun bombear(): Int {
+        synchronized(candadoDeEntrega) {
+            var n = 0
+            while (true) {
+                val b64 = nativeDrain() ?: break
+                n++
+                deliver(b64)
+            }
+            if (n > 0) {
+                totalEntregado += n
+                val t = totalEntregado
+                // Cada mensaje se anuncia una vez, no uno por entrega: son
+                // decenas por frame en operación normal y llenan el log.
+                if (t - ultimoAnunciado >= 50) {
+                    ultimoAnunciado = t
+                    Log.i(TAG, "entregados al web: $t en total")
+                }
+            }
+            return n
         }
     }
 

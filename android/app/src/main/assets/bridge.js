@@ -126,5 +126,41 @@
 		}
 	};
 
+	// ------------------------------------------------------------------
+	// RECIBIR EN TROZOS.
+	//
+	// MEDIDO: un mensaje del nativo pesa 328.072 bytes de base64 (los layouts
+	// iniciales). Kotlin trocea las entregas grandes para no meter medio
+	// megabyte en un solo `evaluateJavascript`.
+	//
+	// El `id` está para que las piezas de dos entregas no se mezclen: `wv.post`
+	// encola y las llamadas de `evaluateJavascript` se ejecutan en orden, pero
+	// dos entregas que se solapan en el tiempo y van en dos `post` distintos
+	// podrían cruzarse. Con el id, cada entrega se reensambla sola.
+	//
+	// `i` se compara contra `total` para saber si están todas, en vez de mirar
+	// la longitud: si faltara un trozo, `join` entregaría un JSON truncado y el
+	// wasm lo descartaría en silencio, que es lo que se quiere evitar.
+	// ------------------------------------------------------------------
+	window.__graphitePendientes = window.__graphitePendientes || {};
+
+	window.graphiteParte = function (id, indice, total, trozo) {
+		try {
+			const piezas = (window.__graphitePendientes[id] =
+				window.__graphitePendientes[id] || {});
+			piezas[indice] = trozo;
+
+			const indices = Object.keys(piezas);
+			if (indices.length !== total) return;
+
+			let b64 = "";
+			for (let i = 0; i < total; i++) b64 += piezas[i];
+			delete window.__graphitePendientes[id];
+			window.graphiteDeliverToWeb(b64);
+		} catch (e) {
+			console.error("[graphite] entrega troceada falló:", e);
+		}
+	};
+
 	console.log("[graphite] bridge.js cargado");
 })();
