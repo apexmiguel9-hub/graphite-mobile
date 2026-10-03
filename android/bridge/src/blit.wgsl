@@ -66,7 +66,24 @@ struct Colocacion {
     // El fondo fuera del lienzo se deja como el fondo del motor, para que se
     // distinga "fuera del lienzo" de "dentro del lienzo pero vacio".
     modo: f32,
-    _relleno: vec3f,
+    // OJO, y esto es un error que ya se cometio: el relleno son `f32` sueltos y
+    // NO un `vec3f`.
+    //
+    // MEDIDO, al abrir la app con este shader:
+    //
+    //     wgpu error: Validation Error
+    //       In bind group index 0, the buffer bound at binding index 2 is bound
+    //       with size 32 where the shader expects 48.
+    //
+    // Un `vec3f` en un uniform va alineado a 16, asi que con `modo: f32` en el
+    // offset 16 el `vec3f` no empieza en el 20: empieza en el 32, y la structura
+    // mide 48. Cuatro `f32` sueltos si dan los 32 bytes justos.
+    //
+    // Y el fallo es un `abort`, porque los errores de wgpu son fatales por
+    // defecto. Lo que se ve en el movil es "la app se cierra al abrir".
+    _r0: f32,
+    _r1: f32,
+    _r2: f32,
 }
 
 @group(0) @binding(2) var<uniform> colocacion: Colocacion;

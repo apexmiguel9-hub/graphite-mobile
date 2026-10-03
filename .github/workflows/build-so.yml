@@ -140,6 +140,30 @@ jobs:
             android/bridge/src/lib.rs \
             android/bridge/src/jni_bridge.rs
 
+      # ------------------------------------------------------------------
+      # EL UNIFORM DEL SHADER, CONTRA EL TAMAÑO QUE RESERVA RUST.
+      #
+      # MEDIDO. Al añadir un `f32` al uniform `Colocacion` de `blit.wgsl` se
+      # rellenó con un `vec3f` "para cuadrar". Un `vec3f` en un uniform va
+      # alineado a 16, así que la structura mide 48 y Rust reservaba 32:
+      #
+      #     wgpu error: Validation Error
+      #       In bind group index 0, the buffer bound at binding index 2 is bound
+      #       with size 32 where the shader expects 48.
+      #
+      # Lo grave: **`cargo check` no lo pilla.** El shader es valido y el buffer
+      # tambien; lo que no cuadra es que los dos midan distinto. Solo lo detecta
+      # wgpu, al crear el bind group, en runtime.
+      #
+      # Y como los errores de wgpu son FATALES por defecto, en el movil lo que se
+      # ve es que la app se cierra al abrir. Sin el hook de panicos —que ya esta
+      # instalado— ni siquiera habria linea de log.
+      # ------------------------------------------------------------------
+      - name: Comprobar uniforms del shader
+        run: |
+          python3 android/scripts/check-wgsl-uniforms.py \
+            android/bridge/src/blit.wgsl Colocacion 32
+
       - name: Build Graphite engine for arm64-v8a
         run: |
           source "$HOME/.cargo/env"
