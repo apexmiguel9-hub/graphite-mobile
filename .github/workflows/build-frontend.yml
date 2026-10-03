@@ -451,11 +451,26 @@ jobs:
           # `yaml.safe_load` en los tres workflows antes de empujar: un YAML
           # invalido se ve en local en un segundo.
           python3 android/scripts/embed-shim.py "$KOTLIN"
-          grep -q 'SHIM_PLACEHOLDER' "$KOTLIN" \
-            && { echo "::error::el marcador no se sustituyo"; exit 1; }
+          # ------------------------------------------------------------------
+          # QUE LA INCRUSTACION SE HAYA HECHO.
+          #
+          # MEDIDO: se comprobaba con `grep -q 'SHIM_PLACEHOLDER' "$KOTLIN"` y
+          # fallaba SI ENCONTRABA la palabra. El marcador aparece tambien en el
+          # comentario que explica el mecanismo —"sustituyendo el marcador
+          # SHIM_PLACEHOLDER"—, y ese comentario se queda. El check leiase a si
+          # mismo y se rechazaba.
+          #
+          # Lo que hay que comprobar es que el delimitador que ABRIA el raw
+          # string ya no este. Ese si es el marcador real.
+          # ------------------------------------------------------------------
+          DELIM=$(python3 -c "print(chr(34) * 3 + 'SHIM_PLACEHOLDER' + chr(34) * 3)")
+          grep -qF "$DELIM" "$KOTLIN" \
+            && { echo "::error::el marcador sin sustituir sigue en $KOTLIN"; exit 1; }
           grep -q 'window.sendNativeMessage' "$KOTLIN" \
             || { echo "::error::el shim incrustado no define sendNativeMessage"; exit 1; }
-          echo "  OK  bridge.js incrustado en WebUI.kt"
+          grep -q 'window.initializeNativeCommunication' "$KOTLIN" \
+            || { echo "::error::el shim incrustado no define initializeNativeCommunication"; exit 1; }
+          echo "  OK  bridge.js incrustado en WebUI.kt (3 globals presentes)"
 
           # `demo-artwork/`: los .graphite que el frontend puede abrir por URL.
           if [ -d frontend/dist/demo-artwork ]; then
