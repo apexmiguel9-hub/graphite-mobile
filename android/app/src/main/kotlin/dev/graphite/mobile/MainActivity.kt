@@ -378,6 +378,24 @@ external fun nativeFrame(): String
  */
 external fun nativeDrain(): String?
 
+/**
+ * Cambia el modo de diagnóstico del blit, en caliente.
+ *
+ * MEDIDO, y responde a la pregunta que un log NO puede contestar:
+ * "aquí debería haber un rectángulo y no lo hay". Un contador dice si el grafo
+ * corre; no dice si la textura tiene contenido ni si la estamos mirando donde
+ * toca.
+ *
+ * Se expone en JS con `window.GraphiteNative.debug(n)`, así se cambia desde el
+ * navegador con la app corriendo, sin recompilar y sin reinstalar.
+ *
+ * MEDIDO que los documentos de ejemplo del propio Graphite ("Open Demo
+ * Artwork", que son dibujos grandes y de colores) tampoco se pintan. Eso quita
+ * de en medio todo lo que tenga que ver con lo que dibuja el usuario: el
+ * problema es del render, no del documento.
+ */
+external fun nativeDebug(modo: Int)
+
 // ------------------------------------------------------------------
 // LAS CINCO FUNCIONES NATIVAS ESTAN AQUI, Y ESTO NO ES COSA SUELTA.
 //

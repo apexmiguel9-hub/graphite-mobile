@@ -182,6 +182,38 @@ pub extern "system" fn native_frame_jni<'local>(
     }
 }
 
+/// Cambia el modo de diagnóstico del blit. **Sin recompilar nada.**
+///
+/// Se llama desde `window.GraphiteNative.debug(n)` en el shim, o sea que se
+/// puede cambiar desde el navegador en caliente, con la app corriendo.
+///
+/// MEDIDO, y esto contesta una pregunta que un log no puede: «aquí debería haber
+/// un rectángulo y no lo hay». Un contador dice si el grafo corre; no dice si la
+/// textura tiene contenido ni si la estamos mirando donde toca. Eso se ve, y se
+/// ve cambiando esto desde el navegador:
+///
+/// | Modo | Lo que se ve | Lo que demuestra |
+/// |---|---|---|
+/// | 1 | rojo = u, verde = v | Si sale degradado, muestreamos donde toca |
+/// | 2 | **alfa de la textura** | **Blanco = hay algo opaco. Negro = vacía** |
+/// | 3 | RGB de la textura | El contenido tal cual, sin el `over` de fondo |
+/// | 4 | coordenada de texel en gris | Si nos salimos de rango por el offset |
+/// | 5 | un color por texel | Si se están repitiendo texels (aliasing) |
+/// | 0 | normal | Vuelve a la interfaz |
+#[export_name = "Java_dev_graphite_mobile_MainActivityKt_nativeDebug"]
+pub extern "system" fn native_debug_jni<'local>(
+    env: JNIEnv<'local>,
+    _class: JClass<'local>,
+    modo: jint,
+) {
+    let modo = modo.clamp(0, 5) as u32;
+    crate::MODO_VISUALIZACION.store(modo, std::sync::atomic::Ordering::Relaxed);
+    log::info!("[{}] modo de visualizacion del blit = {}", TAG, modo);
+    // Se devuelve en el informe del proximo `frame`, para que se vea en el log
+    // junto con la textura y no solo en la pantalla.
+    let _ = env;
+}
+
 /// Cola de mensajes del motor hacia el frontend.
 ///
 /// MEDIDO, y es el bug que hacia que la interfaz saliera vacia:

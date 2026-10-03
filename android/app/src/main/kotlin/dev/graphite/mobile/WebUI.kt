@@ -443,6 +443,19 @@ class WebUI {
          * A la cola por el mismo camino que [onMessage], y con el mismo motivo:
          * el valor de retorno se descarta.
          */
+        /**
+         * Cambia lo que pinta el blit, en caliente. Diagnóstico puro.
+         *
+         * 0 normal · 1 UV · 2 alfa de la textura · 3 RGB · 4 coordenada de
+         * texel · 5 un color por texel.
+         *
+         * Desde el navegador: `GraphiteNative.debug(2)`.
+         */
+        @JavascriptInterface
+        fun debug(modo: Int) {
+            nativeDebug(modo)
+        }
+
         @JavascriptInterface
         fun onInitialized(width: Int, height: Int): String? {
             Log.i(TAG, "el frontend pide conexión: ${width}x$height")

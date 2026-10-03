@@ -44,6 +44,29 @@
 struct Colocacion {
     offset: vec2f,
     scale: vec2f,
+    // Modo de visualizacion. 0 = normal. Lo escribe `native_debug`, que se
+    // llama desde JS con `window.GraphiteNative.debug(n)`, asi que se cambia EN
+    // CALIENTE desde el navegador sin recompilar nada.
+    //
+    // MEDIDO, y esto contesta lo que no se puede ver en un log. La pregunta que
+    // de verdad importa es "deberia haber un rectangulo aqui y no lo hay": eso no
+    // se responde con contadores, se responde mirando. Los modos son:
+    //
+    //   1  UV:  rojo = u, verde = v. Si sale un degradado, estamos
+    //           MUESTREANDO donde toca y el problema es el contenido.
+    //           Si sale plano, no estamos muestreando la textura.
+    //   2  ALFA de la textura. Blanco = hay algo opaco. Negro = esta vacia.
+    //           ESTE es el que responde a "se crea el objeto pero no se pinta".
+    //   3  RGB de la textura tal cual.
+    //   4  La coordenada de la textura que estamos muestreando, en gris: dice si
+    //           nos salimos del rango por el `offset`/`scale`.
+    //   5  Uno por texel: cada pixel de la pantalla tiene un color distinto,
+    //           con un patron fijo. Si sale liso, se estan repitiendo texels.
+    //
+    // El fondo fuera del lienzo se deja como el fondo del motor, para que se
+    // distinga "fuera del lienzo" de "dentro del lienzo pero vacio".
+    modo: f32,
+    _relleno: vec3f,
 }
 
 @group(0) @binding(2) var<uniform> colocacion: Colocacion;
@@ -91,6 +114,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     let coorde = (in.uv - colocacion.offset) * colocacion.scale;
     if (coorde.x < 0.0 || coorde.x > 1.0 || coorde.y < 0.0 || coorde.y > 1.0) {
         return fondo;
+    }
+
+    // Modo de visualizacion: lo que se ve aqui es DIAGNOSTICO, no la interfaz.
+    let modo = i32(colocacion.modo + 0.5);
+    if (modo == 1) {
+        return vec4f(coorde.x, coorde.y, 0.0, 1.0);
+    }
+    if (modo == 2) {
+        let a = textureSample(src, samp, coorde).a;
+        return vec4f(a, a, a, 1.0);
+    }
+    if (modo == 3) {
+        return textureSample(src, samp, coorde);
+    }
+    if (modo == 4) {
+        return vec4f(coorde, 0.0, 1.0);
+    }
+    if (modo == 5) {
+        // 16 (coordenada de texel) troceada en dos bytes por canal.
+        let t = coorde * vec2f(textureDimensions(src));
+        return vec4f(fract(t.x / 256.0), fract(t.y / 256.0), fract(t.x / 16.0), 1.0);
     }
 
     let c = textureSample(src, samp, coorde);

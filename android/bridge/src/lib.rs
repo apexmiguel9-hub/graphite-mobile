@@ -63,6 +63,15 @@ fn fase(nombre: &str) {
     log::info!("[{}] FASE t={}ms {}", TAG, t, nombre);
 }
 
+/// Modo de diagnóstico del blit. Lo cambia `native_debug`, que llega desde JS.
+///
+/// Un `AtomicU32` y no un campo del `Engine` a propósito: el blit escribe el
+/// uniform desde el hilo de render, y esto lo escribe el hilo del JavaScript. Con
+/// un `Mutex` sería lo de siempre, pero aquí no hay nada que proteger —un entero
+/// que solo se lee y solo se escribe— y un atomic no puede quedarse envenenado.
+pub static MODO_VISUALIZACION: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
 /// El rectángulo del lienzo dentro de la ventana, en **píxeles físicos**.
 ///
 /// Lo emite el editor ya convertido (`to_physical()`), no el frontend: quien lo
@@ -451,6 +460,10 @@ impl Engine {
                 offset_y as f32,
                 scale_x as f32,
                 scale_y as f32,
+                MODO_VISUALIZACION.load(std::sync::atomic::Ordering::Relaxed) as f32,
+                0.0,
+                0.0,
+                0.0,
             ]),
         );
 
@@ -1048,10 +1061,15 @@ impl Engine {
         let view = tex.create_view(&Default::default());
 
         // ------------------------------------------------------------------
-        // EL UNIFORM DE COLOCACIÓN DEL LIENZO.
+        // EL UNIFORM DE COLOCACIÓN DEL LIENZO, Y EL MODO DE VISUALIZACIÓN.
         //
-        // `vec2f` + `vec2f`: 16 bytes. Es lo que lee `blit.wgsl` para saber qué
-        // parte de la ventana es el lienzo y qué escala aplicar.
+        // `vec2f` + `vec2f` + `f32` + `vec3f` de relleno: 32 bytes. Los 16
+        // primeros son la colocación; el `f32` es el modo de diagnóstico que lee
+        // `blit.wgsl`, y se cambia en caliente desde el navegador con
+        // `window.GraphiteNative.debug(n)`.
+        //
+        // El relleno no es adorno: sin el, la structura mide 20 bytes y el
+        // sombreado espera el `vec2f` siguiente alineado a 16.
         //
         // Se inicializa a "todo la ventana" (offset 0, scale 1), que es lo
         // correcto antes de que el frontend diga dónde está el lienzo: es decir,
@@ -1060,11 +1078,15 @@ impl Engine {
         // ------------------------------------------------------------------
         let colocacion = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("blit-colocacion"),
-            size: 16,
+            size: 32,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        queue.write_buffer(&colocacion, 0, bytemuck::cast_slice(&[0.0f32, 0.0f32, 1.0f32, 1.0f32]));
+        queue.write_buffer(
+            &colocacion,
+            0,
+            bytemuck::cast_slice(&[0.0f32, 0.0f32, 1.0f32, 1.0f32, 0.0f32, 0.0, 0.0, 0.0]),
+        );
 
         (pipeline, sampler, view, colocacion)
     }
@@ -1310,7 +1332,7 @@ impl Engine {
                     resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
                         buffer: &self.colocacion,
                         offset: 0,
-                        size: wgpu::BufferSize::new(16),
+                        size: wgpu::BufferSize::new(32),
                     }),
                 },
             ],
