@@ -35,11 +35,19 @@
 	<body>
 		<!--
 			El bundle que produce `vite build --mode native` es
-			`assets/index-<hash>.js`. El hash cambia en cada build, asi que este
-			fichero lo carga el workflow de `build-apk`, que lo reescribe con el
-			nombre real al preparar los assets. Asi no hay que tocar el nombre a
-			mano en cada build, y este fichero no depende de ningun hash.
+			`assets/index-<hash>.js`, renombrado a `bundle.js` por el workflow.
+			Ese workflow lo reescribe con el nombre real al preparar los assets,
+			así que aquí no hay ningún hash.
+
+			`type="module"` NO es opcional. MEDIDO: sin él, el WebView lanza
+
+			    Uncaught SyntaxError: Cannot use 'import.meta' outside a module
+
+			y el frontend no arranca. Vite emite el bundle como ES module porque
+			usa `import.meta.url` para resolver el `.wasm` con `new URL(...)`, que
+			es justo el mecanismo con el que encuentra su propio binario. Un
+			`<script>` normal no puede usar `import.meta`.
 		-->
-		<script src="./bundle.js"></script>
+		<script type="module" src="./bundle.js"></script>
 	</body>
 </html>

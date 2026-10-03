@@ -240,6 +240,30 @@ jobs:
           # una sola linea y `[^"']*` se come medio fichero, devolviendo basura.
           # Se comprueba lo unico que importa: que el fichero este donde la ruta
           # `/assets/glue.wasm` va a buscarlo.
+          # ------------------------------------------------------------------
+          # `type="module"`, Y QUE EL BUNDLE NECESITE MODULE.
+          #
+          # MEDIDO: sin `type="module"` en el `<script>`, el WebView lanza
+          #   Uncaught SyntaxError: Cannot use 'import.meta' outside a module
+          # y el frontend no arranca. Verde en CI, negro en el móvil.
+          #
+          # Vite emite un ES module porque usa `import.meta.url` para localizar su
+          # propio `.wasm`. Si el bundle lo usa, el `<script>` TIENE que ser
+          # module; y si no lo usa, `type="module"` no hace daño.
+          #
+          # Aquí se comprueban las dos mitades: que el index lo declare, y que el
+          # bundle lo necesite. Con eso, un cambio en cualquiera de las dos
+          # secciones del contrato da error en el build en vez de en el móvil.
+          # ------------------------------------------------------------------
+          grep -q 'type="module"' "$DEST/index.html" \
+            || { echo "::error::index.html no declara type=\"module\" en el script"; exit 1; }
+          echo "  OK  index.html declara type=\"module\""
+
+          grep -q 'import\.meta' "$DEST/bundle.js" \
+            || { echo "::error::el bundle NO usa import.meta; el index.html declara"
+               echo "::error::type=\"module\" sin necesidad. Revisar el contrato"; exit 1; }
+          echo "  OK  el bundle usa import.meta, type=\"module\" es necesario"
+
           test -f "$DEST/assets/glue.wasm" \
             || { echo "::error::no existe assets/glue.wasm: el wasm no cargara"; exit 1; }
           HASHED=$(find "$DEST/assets" -name 'graphite_wasm_wrapper_bg-*.wasm' | head -1)
