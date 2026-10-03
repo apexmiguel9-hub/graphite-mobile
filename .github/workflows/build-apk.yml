@@ -209,6 +209,28 @@ jobs:
       # la misma en los dos: si hay un run EXITOSO del MISMO commit, ese; si no,
       # uno anterior, diciéndolo en voz alta.
       # ------------------------------------------------------------------
+      # ------------------------------------------------------------------
+      # BAJAR LA UI. Igual que el `.so`, el frontend viene de otro workflow:
+      # así tocar Kotlin no paga la compilación de Rust ni la de npm.
+      #
+      # Y AQUI ESTA ESPERAR, QUE ES LO QUE FALTABA.
+      #
+      # MEDIDO: `build-apk` se dispara al terminar `build-so`, y `build-so`
+      # termina ANTES que `build-frontend` —el motor tarda 10 min, el frontend 12.
+      # O sea que el APK SIEMPRE se construia con el frontend del commit
+      # ANTERIOR. Con el aviso puesto se veia claro:
+      #
+      #   ::warning::el frontend es de OTRO commit
+      #   ::warning::  este:    da38426
+      #   ::warning::  el de UI: 029caa5
+      #
+      # y el fallo era un `WebUI.kt` viejo, con errores de compilacion de hace
+      # tres commits. Verde el frontend, verde el motor, y el APK fallando por
+      # codigo que ya no existe en el repo.
+      #
+      # Ahora se espera al run de ESTE commit, hasta 25 minutos. Si no llega, se
+      # usa el anterior y se avisa, que es mejor que no tener APK.
+      # ------------------------------------------------------------------
       - name: Resolve frontend run
         id: fe
         env:
@@ -217,79 +239,56 @@ jobs:
         run: |
           set -euo pipefail
           REPO="$GITHUB_REPOSITORY"
+
+          buscar_de_este_commit() {
+            gh api "repos/$REPO/actions/workflows/build-frontend.yml/runs?per_page=100&branch=master" \
+              | jq -r --arg sha "$SHA" \
+                  '.workflow_runs[]
+                   | select(.conclusion=="success" and .head_sha==$sha)
+                   | .id' | head -1
+          }
+
           RUN_ID=""
-          PAGE=1
-          while [ -z "$RUN_ID" ]; do
-            JSON=$(gh api "repos/$REPO/actions/workflows/build-frontend.yml/runs?per_page=100&page=$PAGE")
-            # Primero el run de ESTE commit. La API los devuelve del mas nuevo al
-            # mas viejo, asi que un `head -1` sobre los exitosos ya daria el de
-            # este commit si existe; se filtra explicitamente para que quede
-            # dicho.
-            RUN_ID=$(echo "$JSON" | jq -r --arg sha "$SHA" \
-              '.workflow_runs[]
-               | select(.conclusion=="success" and .head_branch=="master" and .head_sha==$sha)
-               | .id' | head -1)
-            [ -n "$RUN_ID" ] && break
-            # Si no hay uno de este commit, se coge el mas reciente de master y
-            # SE DICE, porque si no el APK lleva una UI de un commit anterior y
-            # no hay forma de saberlo.
-            RUN_ID=$(echo "$JSON" | jq -r \
-              '.workflow_runs[]
-               | select(.conclusion=="success" and .head_branch=="master")
-               | .id' | head -1)
-            [ -n "$RUN_ID" ] && break
-            PAGE=$((PAGE + 1))
-            [ "$PAGE" -gt 10 ] && break
+          ESPERA=0
+          LIMITE=$((25 * 60))
+          while [ -z "$RUN_ID" ] && [ "$ESPERA" -lt "$LIMITE" ]; do
+            RUN_ID=$(buscar_de_este_commit)
+            if [ -n "$RUN_ID" ]; then
+              break
+            fi
+            if [ "$ESPERA" -eq 0 ]; then
+              echo "El frontend de este commit ($SHA) aun no ha terminado."
+              echo "Se espera hasta 25 min: build-so termina antes que"
+              echo "build-frontend, asi que sin esto el APK seria de un commit"
+              echo "anterior."
+            fi
+            sleep 30
+            ESPERA=$((ESPERA + 30))
           done
 
+          if [ -n "$RUN_ID" ]; then
+            echo "  frontend del MISMO commit: $RUN_ID (esperados ${ESPERA}s)"
+            echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "Usando el frontend del run $RUN_ID"
+            exit 0
+          fi
+
+          echo "::warning::tras ${ESPERA}s no hay frontend exitoso de este commit."
+          echo "::warning::Se usa el mas reciente de master, que es de otro commit."
+          RUN_ID=$(gh api "repos/$REPO/actions/workflows/build-frontend.yml/runs?per_page=100&branch=master" \
+            | jq -r '.workflow_runs[] | select(.conclusion=="success" and .head_branch=="master") | .id' \
+            | head -1)
           if [ -z "$RUN_ID" ]; then
             echo "::error::no hay ningun build-frontend exitoso en master."
             echo "::error::La UI es obligatoria: sin ella el APK abre una pantalla gris."
-            gh api "repos/$REPO/actions/workflows/build-frontend.yml/runs?per_page=10" \
-              --jq '.workflow_runs[] | "  \(.id)  \(.conclusion)  \(.head_branch)  \(.created_at)"' || true
             exit 1
           fi
-
           RUN_SHA=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '.head_sha')
-          if [ "$RUN_SHA" = "$SHA" ]; then
-            echo "  frontend del MISMO commit: $RUN_ID"
-          else
-            echo "::warning::el frontend es de OTRO commit"
-            echo "::warning::  este:    $SHA"
-            echo "::warning::  el de UI: $RUN_SHA"
-            echo "::warning::El APK lleva una UI de un commit anterior. Es lo que"
-            echo "::warning::pasa cuando build-frontend aun no ha terminado."
-          fi
+          echo "::warning::  este:    $SHA"
+          echo "::warning::  el de UI: $RUN_SHA"
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
-          echo "Usando el frontend del run $RUN_ID"
+          echo "Usando el frontend del run $RUN_ID (de OTRO commit)"
 
-      # ------------------------------------------------------------------
-      # NOTA SOBRE `file://` Y EL CORS DE `bundle.js`.
-      #
-      # MEDIDO, y sigue pasando con el APK bien construido:
-      #
-      #   Access to script at 'file:///android_asset/web/bundle.js' from origin
-      #   'null' has been blocked by CORS policy: Cross origin requests are only
-      #   supported for protocol schemes: chrome, chrome-untrusted, data, http,
-      #   https
-      #
-      # La UI NO se carga por esto. La causa es que `bundle.js` se declara
-      # `type="module"`, y un modulo ES una peticion: con esquema `file:` y origen
-      # `null` el navegador la bloquea. Un `<script>` clasico pasaria, pero el
-      # bundle necesita ser module por el `import.meta` con el que localiza su
-      # propio `.wasm`.
-      #
-      # La solucion es `WebViewAssetLoader`: sirve los assets por
-      # `https://appassets.androidplatform.net`, que es un origen real con
-      # esquema `https`. Ahi los modulos y el `fetch` funcionan.
-      #
-      # MEDIDO tambien: el shim SI llega a inyectarse (`shim inyectado
-      # (embebido, 5092 bytes)` y `[graphite] bridge.js cargado`), y el motor
-      # renderiza a 60 fps con `resizes=0`. Lo que falta es el frontend.
-      #
-      # Este workflow NO lo arregla: es un cambio de Kotlin, no de empaquetado.
-      # Lo que hace es que quede escrito aqui, junto al log que lo produce.
-      # ------------------------------------------------------------------
       - name: Download the frontend into assets/web
         env:
           GH_TOKEN: ${{ github.token }}
