@@ -380,11 +380,17 @@ jobs:
             CSSNAME=$(basename "$CSS")
             echo "  css: $CSSNAME"
             cp "$CSS" "$OUT/style.css"
-            # El bundle referencia el CSS como `assets/<hash>.css` en algunos
-            # builds y como `<hash>.css` en otros. Se cubren las dos formas.
-            sed -i "s|assets/${CSSNAME}|style.css|g" "$OUT/bundle.js"
-            sed -i "s|/${CSSNAME}|/style.css|g" "$OUT/bundle.js"
-            sed -i "s|\"${CSSNAME}\"|\"style.css\"|g" "$OUT/bundle.js"
+            # MEDIDO: el bundle NO menciona el CSS. Vite lo saca del bundle y lo
+            # pone en un `<link>` del `index.html` que genera; como este
+            # `index.html` es nuestro y lo reemplaza, el CSS se perdia.
+            #
+            # Aun asi se renombra aqui, porque si vite cambia y mete el CSS en el
+            # bundle, el `sed` lo deja apuntando a un nombre que existe. Con el
+            # prefijo `/assets/` SEGUIDO, por lo mismo que el wasm: es el
+            # `WebViewAssetLoader` el que lo resuelve.
+            sed -i "s|assets/${CSSNAME}|assets/style.css|g" "$OUT/bundle.js"
+            sed -i "s|/${CSSNAME}|/assets/style.css|g" "$OUT/bundle.js"
+            sed -i "s|\"${CSSNAME}\"|\"assets/style.css\"|g" "$OUT/bundle.js"
           fi
 
           # ------------------------------------------------------------------
@@ -417,8 +423,17 @@ jobs:
           echo "  wasm: $(basename "$WASM")"
           cp "$WASM" "$OUT/glue.wasm"
           WASMBASE=$(basename "$WASM")
-          sed -i "s|assets/${WASMBASE}|glue.wasm|g" "$OUT/bundle.js"
-          sed -i "s|${WASMBASE}|glue.wasm|g" "$OUT/bundle.js"
+          # La referencia en el bundle es `/assets/${WASMBASE}` y tiene que SEGUIR
+          # siendo `/assets/glue.wasm`: el prefijo `/assets/` del
+          # `WebViewAssetLoader` es el que la resuelve contra la carpeta de la UI.
+          #
+          # MEDIDO: se sustituyo el prefijo entero y el bundle acabo pidiendo
+          # `glue.wasm` RELATIVO, que resuelve a la pagina actual y no al handler.
+          # El check que lo cazo:
+          #   ::error::el bundle ya no cita /assets/glue.wasm
+          #
+          # Aqui solo se cambia el NOMBRE con hash, nunca el prefijo.
+          sed -i "s|/${WASMBASE}|/glue.wasm|g" "$OUT/bundle.js"
 
           cp frontend/dist/index.html "$OUT/index.dist.html"
 
