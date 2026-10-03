@@ -185,23 +185,43 @@ pub extern "system" fn native_message_jni<'local>(
 }
 
 /// El frontend ha terminado de arrancar (`window.initializeNativeCommunication`).
+///
+/// Devuelve base64 con lo que el motor conteste, o null. Se contesta por la
+/// misma vía que `nativeMessage` a propósito: el frontend ya está listo en ese
+/// momento, así que no hace falta un canal de vuelta aparte, y usar el mismo
+/// significa que el shim solo tiene un camino que conocer.
 #[export_name = "Java_dev_graphite_mobile_MainActivityKt_nativeInitialized"]
 pub extern "system" fn native_initialized_jni<'local>(
-    env: JNIEnv<'local>,
+    mut env: JNIEnv<'local>,
     _class: JClass<'local>,
     width: jint,
     height: jint,
-) {
-    let mut guard = ENGINE.lock().unwrap();
-    let Some(engine) = guard.as_mut() else {
-        log::warn!("[{}] nativeInitialized sin motor arrancado", TAG);
-        return;
+) -> jstring {
+    let respuesta = {
+        let mut guard = ENGINE.lock().unwrap();
+        let Some(engine) = guard.as_mut() else {
+            log::warn!("[{}] nativeInitialized sin motor arrancado", TAG);
+            return std::ptr::null_mut();
+        };
+        engine.on_initialized(width as u32, height as u32)
     };
-    engine.on_initialized(width as u32, height as u32);
 
-    // Contestación inmediata: el frontend espera a que le digan algo y si no
-    // parece que se ha quedado colgado.
-    let _ = env;
+    let Some(respuesta) = respuesta else {
+        return std::ptr::null_mut();
+    };
+    match base64_encode(&respuesta) {
+        Ok(b64) => match env.new_string(b64) {
+            Ok(s) => s.into_raw(),
+            Err(e) => {
+                log::error!("[{}] no se pudo crear el string JNI: {:?}", TAG, e);
+                std::ptr::null_mut()
+            }
+        },
+        Err(e) => {
+            log::error!("[{}] fallo al codificar la respuesta: {}", TAG, e);
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// Base64 estándar, sin dependencias.

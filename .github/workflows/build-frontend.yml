@@ -328,17 +328,99 @@ jobs:
 
           echo "VEREDICTO: el frontend esta compilado en modo nativo"
 
-      # Se sube el dist entero. El APK lo baja y lo mete en assets/.
-      - name: Package the dist
+      # ------------------------------------------------------------------
+      # EMPAQUETAR PARA ANDROID
+      #
+      # Va renombrado a la forma que espera la app, para que el APK no tenga que
+      # buscar ficheros con hash en tiempo de ejecucion:
+      #
+      #   assets/index-<hash>.js  ->  assets/bundle.js
+      #
+      # El nombre con hash viene de vite y cambia en cada build. Se renombra
+      # aqui, una vez, en vez de en el APK.
+      #
+      # Se incluyen tambien:
+      #   - bridge.js, el shim, que NO esta en el dist porque lo escribe el
+      #     propio repo y vite no lo conoce.
+      #   - index.html, reescrito con `<script src="./bundle.js">`. El del dist
+      #     apunta al fichero con hash.
+      #
+      # NOTA: `index.html` del repo se copia en vez de generarse aqui, para que
+      # el fondo negro y el `touch-action` esten versionados y revisables.
+      # ------------------------------------------------------------------
+      - name: Package the dist for Android
         run: |
           set -euo pipefail
-          tar -czf frontend-dist.tar.gz -C frontend/dist .
-          ls -la frontend-dist.tar.gz
+          OUT=frontend-for-android
+          rm -rf "$OUT"
+          mkdir -p "$OUT"
 
-      - name: Upload frontend dist
+          # El bundle con hash -> bundle.js
+          BUNDLE=$(find frontend/dist/assets -name 'index-*.js' | head -1)
+          test -n "$BUNDLE" || { echo "::error::no hay bundle index-*.js en dist/assets"; exit 1; }
+          echo "  bundle: $(basename "$BUNDLE")"
+          cp "$BUNDLE" "$OUT/bundle.js"
+
+          # El CSS tiene hash tambien, y el bundle lo importa por su nombre.
+          # Hay que reescribir la referencia DENTRO del JS, no solo renombrar el
+          # fichero: el bundle trae el nombre con hash literal dentro.
+          CSS=$(find frontend/dist/assets -name 'index-*.css' | head -1)
+          if [ -n "$CSS" ]; then
+            CSSNAME=$(basename "$CSS")
+            echo "  css: $CSSNAME"
+            cp "$CSS" "$OUT/style.css"
+            # El bundle referencia el CSS como `assets/<hash>.css` en algunos
+            # builds y como `<hash>.css` en otros. Se cubren las dos formas.
+            sed -i "s|assets/${CSSNAME}|style.css|g" "$OUT/bundle.js"
+            sed -i "s|/${CSSNAME}|/style.css|g" "$OUT/bundle.js"
+            sed -i "s|\"${CSSNAME}\"|\"style.css\"|g" "$OUT/bundle.js"
+          fi
+
+          # El wasm del frontend. El nombre con hash va DENTRO del glue JS.
+          WASM=$(find frontend/dist/assets -name 'graphite_wasm_wrapper_bg-*.wasm' | head -1)
+          test -n "$WASM" || { echo "::error::no hay wasm del frontend"; exit 1; }
+          echo "  wasm: $(basename "$WASM")"
+          cp "$WASM" "$OUT/glue.wasm"
+          WASMBASE=$(basename "$WASM")
+          sed -i "s|${WASMBASE}|glue.wasm|g" "$OUT/bundle.js"
+          sed -i "s|assets/${WASMBASE}|glue.wasm|g" "$OUT/bundle.js"
+
+          # El glue que genera wasm-bindgen tambien se importa por su ruta.
+          # En el bundle va incluido, pero por si acaso se copia tambien.
+          cp frontend/dist/index.html "$OUT/index.dist.html"
+
+          # El shim: NO esta en el dist (lo escribe este repo, vite no lo
+          # conoce). Se copia desde el repo.
+          cp android/app/src/main/assets/web/bridge.js "$OUT/bridge.js"
+          cp android/app/src/main/assets/web/index.html "$OUT/index.html"
+
+          # Los iconos y las miniaturas que el bundle puede pedir por URL.
+          # El frontend los trae INLINEADOS por el alias `?raw` de vite, asi que
+          # esto es solo por si algo se pide en runtime.
+          if [ -d frontend/dist/demo-artwork ]; then
+            cp -r frontend/dist/demo-artwork "$OUT/demo-artwork"
+          fi
+          cp -r frontend/dist/assets "$OUT/assets" 2>/dev/null || true
+
+          echo "=== contenido empaquetado ==="
+          ls -la "$OUT"
+          echo "=== total ==="
+          du -sh "$OUT"
+
+          # El bundle tiene que seguir citando al glue, que es como se carga
+          # el wasm. Si esta comprobacion falla, el wasm no se encontrara y el
+          # frontend se quedara en negro.
+          echo "=== comprobacion: el bundle cita el wasm ==="
+          grep -o 'glue\.wasm' "$OUT/bundle.js" | head -1 \
+            || { echo "::error::el bundle no cita glue.wasm: el wasm no se podra cargar"; exit 1; }
+
+          tar -czf frontend-for-android.tar.gz -C "$OUT" .
+          ls -la frontend-for-android.tar.gz
+
+      - name: Upload frontend for Android
         uses: actions/upload-artifact@v4
         with:
           name: graphite-mobile-frontend
-          path: frontend-dist.tar.gz
+          path: frontend-for-android.tar.gz
           retention-days: 30
           if-no-files-found: error

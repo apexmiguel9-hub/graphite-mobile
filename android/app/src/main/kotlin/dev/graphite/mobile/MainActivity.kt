@@ -6,6 +6,7 @@ import android.os.Bundle
 import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import android.widget.FrameLayout
 
 /**
  * Activity mínima: una `SurfaceView` a pantalla completa y el motor pintando
@@ -39,6 +40,13 @@ class MainActivity : Activity() {
     /** Hilo de render. Vive entre `surfaceCreated` y `surfaceDestroyed`. */
     private var renderThread: RenderThread? = null
 
+    /** La UI. El frontend de Graphite dentro de un WebView. */
+    private lateinit var webUI: WebUI
+
+    /** El tamaño que se le pasó por última vez a la superficie. */
+    @Volatile
+    private var lastSize: Pair<Int, Int> = 0 to 0
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -50,7 +58,51 @@ class MainActivity : Activity() {
             // solo haría que el compositor mezcle contra el fondo por nada.
             holder.setFormat(PixelFormat.RGBX_8888)
         }
-        setContentView(surfaceView)
+
+        webUI = WebUI().apply {
+            // Cada mensaje que el motor devuelve al frontend pasa por aquí.
+            // Se hace `post` dentro de `deliver`, así que se puede llamar desde
+            // el hilo de render sin tocar la WebView directamente.
+            onDeliverToWeb = { base64 -> deliver(base64) }
+        }
+
+        // Dos capas: la SurfaceView del motor al fondo, y el WebView de la UI
+        // encima.
+        //
+        // OJO con esto: `SurfaceView` perfora un agujero en la jerarquía de
+        // vistas —es una capa de hardware aparte, no un `View` normal—, así que
+        // un WebView ENCIMA no se pinta de forma fiable sin `setZOrderMediaOverlay`
+        // o `setZOrderOnTop`. Con el SurfaceView por defecto (detrás de la
+        // ventana), el WebView sí se ve, porque es la ventana la que se compone
+        // encima del SurfaceView. Por eso el motor va detrás y no delante: es lo
+        // que evita el problema, en vez de pelearse con él.
+        val root = FrameLayout(this).apply {
+            addView(
+                surfaceView,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                ),
+            )
+        }
+
+        // El WebView arranca cuando el motor ya tiene tamaño: antes de eso no
+        // hay nada que enseñarle y el frontend maquetaría a 0.
+        webView = null
+        root.addView(
+            webUI.create(),
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT,
+            ),
+        )
+
+        setContentView(root)
+    }
+
+    /** Entrega un mensaje del motor al frontend. Seguro desde cualquier hilo. */
+    private fun deliver(base64: String) {
+        webUI.deliver(base64)
     }
 
     override fun onResume() {
@@ -83,6 +135,7 @@ class MainActivity : Activity() {
             // cualquier cambio de barras del sistema.
             Log.i(TAG, "surfaceChanged -> ${w}x$ht (formato $format)")
             nativeSurfaceSize(w, ht)
+            lastSize = w to ht
 
             // El hilo arranca con el tamaño ya conocido.
             if (renderThread == null) startRendering()

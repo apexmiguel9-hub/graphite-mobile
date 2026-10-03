@@ -417,35 +417,50 @@ impl Engine {
     /// El frontend ha terminado de arrancar y pide conexión
     /// (`window.initializeNativeCommunication`).
     ///
-    /// En el escritorio esto lo dispara el `on_context_created` de CEF. Aquí lo
-    /// llama el shim JS del WebView.
+    /// En el escritorio esto lo dispara el `on_context_created` de CEF
+    /// (`desktop/ui/src/internal/render_process_v8_handler.rs`). Aquí lo llama
+    /// el shim JS del WebView.
     ///
-    /// Lo que hace falta en este punto es el estado de la aplicación:
+    /// Lo que el frontend necesita en este punto es el estado de la aplicación:
     /// preferencias, documentos del último uso y el tamaño de la ventana. En el
-    /// escritorio los carga `desktop/src/app.rs`; en Android todavía no hay
-    /// persistencia, así que solo se le dice al frontend las medidas.
-    pub fn on_initialized(&mut self, width: u32, height: u32) {
+    /// escritorio lo carga `desktop/src/app.rs`; en Android todavía no hay
+    /// persistencia, así que se le pasan las medidas y se registra el resto
+    /// como NO implementado, en vez de fingir que sí.
+    pub fn on_initialized(&mut self, width: u32, height: u32) -> Option<Vec<u8>> {
         log::info!("[{}] el frontend pide conexión ({}x{})", TAG, width, height);
-
-        // El frontend necesita saber cuánto tiene de ventana para maquetar sus
-        // paneles. Sin esto se maqueta a 0 y se ve la UI pero con las
-        // proporciones raras.
-        let respuestas = self.wrapper.dispatch(DesktopWrapperMessage::UpdateMaximized {
-            maximized: true,
-        });
-        let _ = respuestas;
-        self.wrapper.dispatch(DesktopWrapperMessage::UpdateFullscreen { fullscreen: true });
-
-        // Sin persistencia todavia: se avisara al frontend con un estado vacio
-        // en cuanto se implemente. Por ahora solo se registra que se ha conectado
-        // y cuantas respuestas produjo el arranque.
-        let r = self.wrapper.dispatch(DesktopWrapperMessage::Wake);
-        log::info!(
-            "[{}] frontend conectado. Wake produjo {} respuestas",
-            TAG,
-            r.len()
-        );
         self.frontend_conectado = true;
+
+        // Sin persistencia todavía. En el escritorio esto son
+        // `PersistenceLoadPreferences` y `PersistenceReadState`, que leen de
+        // disco. Aquí no hay disco: cuando se implemente, son dos dispatch más.
+        // Se dejan escritos y comentados para que quede claro qué falta, en vez
+        // de que falte sin decir nada.
+
+        // Un `Wake` es lo que el escritorio manda cuando una future del motor
+        // termina; aquí no hay futures, pero es el mensaje que le dice al motor
+        // que ya puede trabajar y produce las respuestas iniciales.
+        let respuestas = self.wrapper.dispatch(DesktopWrapperMessage::Wake);
+
+        let mut para_web: Vec<FrontendMessage> = Vec::new();
+        let mut otros = 0usize;
+        for r in respuestas {
+            match r {
+                DesktopFrontendMessage::ToWeb(mut ms) => para_web.append(&mut ms),
+                _ => otros += 1,
+            }
+        }
+        log::info!(
+            "[{}] frontend conectado. {} respuestas al web, {} de escritorio sin manejar",
+            TAG,
+            para_web.len(),
+            otros
+        );
+        self.messages_descartados += otros as u32;
+
+        if para_web.is_empty() {
+            return None;
+        }
+        serialize_frontend_messages(para_web)
     }
 
     /// ¿Ya ha conectado el frontend?

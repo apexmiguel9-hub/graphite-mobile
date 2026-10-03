@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="es">
+	<head>
+		<meta charset="utf-8" />
+		<meta
+			name="viewport"
+			content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+		/>
+		<title>Graphite</title>
+		<style>
+			/* Todo el fondo negro ANTES de que llegue el bundle. El motor pinta
+			   un gris muy oscuro (39,39,39) como fondo del lienzo, así que un
+			   blanco de fondo haría un flash blanco al arrancar que dura lo que
+			   tarda el wasm en inicializarse. */
+			html,
+			body {
+				margin: 0;
+				padding: 0;
+				height: 100%;
+				overflow: hidden;
+				background: #0a0a0a;
+				overscroll-behavior: none;
+				/* Sin selección de texto: es un editor gráfico, y en un móvil
+				   seleccionar arrastrando es Molesto y además dispara el menú de
+				   copiar/pegar sin querer. */
+				-webkit-user-select: none;
+				user-select: none;
+				-webkit-touch-callout: none;
+				/* Sin rebote de scroll: el frontend gestiona su propio scroll, y
+				   el rebote del navegador lo descoloca. */
+				touch-action: none;
+			}
+		</style>
+	</head>
+	<body>
+		<!--
+			El bundle que produce `vite build --mode native` es
+			`assets/index-<hash>.js`. El hash cambia en cada build, asi que este
+			fichero lo carga el workflow de `build-apk`, que lo reescribe con el
+			nombre real al preparar los assets. Asi no hay que tocar el nombre a
+			mano en cada build, y este fichero no depende de ningun hash.
+		-->
+		<script src="./bundle.js"></script>
+	</body>
+</html>

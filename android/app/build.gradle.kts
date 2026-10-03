@@ -33,21 +33,23 @@ android {
     kotlinOptions { jvmTarget = "17" }
 
     sourceSets["main"].jniLibs.srcDirs("src/main/jniLibs")
+
+    // La UI (`assets/web/`) la baja el workflow, no está en el repo: son 6 MB de
+    // bundle con hash, que cambian en cada build de upstream. En el repo solo
+    // están `index.html` y `bridge.js`, que son de este repo y sí se versionan.
+    sourceSets["main"].assets.srcDirs("src/main/assets")
 }
 
 // ------------------------------------------------------------------
-// SIN DEPENDENCIAS. A propósito.
+// SIN DEPENDENCIAS. Sigue siendo una decisión.
 //
-// Esta primera versión es solo el lienzo: `SurfaceView` + el motor. La capa de UI
-// (el frontend Svelte de Graphite, dentro de un WebView) se añade después.
+// La UI es el frontend de Graphite dentro de un WebView, y `android.webkit` es
+// del framework, no de AndroidX. Así que sigue sin make needing nada.
 //
-// No meter Compose ni AndroidX ahora es una decisión, no una omisión: si la
-// pantalla sale rara, hay que poder decir si es el motor o la UI, y eso es mucho
-// más fácil cuando no hay UI. Además, cada dependencia que se añade aquí es una
-// variable más en un `build-apk` que tarda.
-//
-// Nada de esto necesita AndroidX: el tema es de plataforma
-// (`Theme.Material.NoActionBar`) y el SurfaceView es del framework.
+// Ni Compose ni AndroidX a propósito: si la pantalla sale rara, hay que poder
+// decir si es el motor, el WebView, o la composición de las dos capas. Eso es
+// mucho más fácil cuando no hay un framework de UI en medio. Cuando haya que
+// portar algo a nativo, se añade entonces.
 // ------------------------------------------------------------------
 dependencies {
 }
