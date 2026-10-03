@@ -7,6 +7,7 @@ import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
+import android.webkit.WebResourceResponse
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -52,12 +53,21 @@ import androidx.webkit.WebViewAssetLoader.AssetsPathHandler
 @SuppressLint("SetJavaScriptEnabled")
 class WebUI {
     private var webView: WebView? = null
+
+    /**
+     * El asset loader. MEDIDO: `WebView` NO tiene `setAssetLoader` — leidas sus
+     * metodos del `android.jar` de API 36, no existe. Todo el soporte de
+     * origins pasa por `shouldInterceptRequest`, asi que el loader vive aqui y
+     * el `WebViewClient` se lo consulta.
+     */
+    private lateinit var loader: WebViewAssetLoader
+
     private var cargado = false
 
     /** Se llama con cada mensaje que el nativo devuelve hacia el frontend. */
     var onDeliverToWeb: ((String) -> Unit)? = null
 
-    /** DiAGNóstico a la consola del WebView, visible en logcat con `chromium`. */
+    /** Estado de la carga, para el log. */
     private var ultimoEstado = ""
 
     /**
@@ -91,7 +101,45 @@ class WebUI {
             mediaPlaybackRequiresUserGesture = false
         }
 
+        // ------------------------------------------------------------------
+        // EL ASSET LOADER, ANTES DEL CLIENTE.
+        //
+        // MEDIDO: `WebViewAssetLoader` esta en `androidx.webkit`, NO en el
+        // framework — comprobado en el `android.jar` de API 36, donde no hay
+        // ninguna clase `AssetLoader`. De ahi la dependencia.
+        //
+        // Va antes del `WebViewClient` porque el cliente lo consulta en
+        // `shouldInterceptRequest`, y ese método no puede encontrar un
+        // `lateinit` sin inicializar.
+        // ------------------------------------------------------------------
+        loader = WebViewAssetLoader.Builder()
+            // `setDomain` espera SOLO el host, sin esquema. Ponerlo con
+            // `https://` ahi no funciona y el error no lo explica.
+            .setDomain(HOST)
+            .addPathHandler("/assets/", AssetsPathHandler(context))
+            .build()
+
         webViewClient = object : WebViewClient() {
+            /**
+             * Sirve los assets por un ORIGEN REAL.
+             *
+             * MEDIDO: `WebView` no tiene `setAssetLoader` — leidas sus metodos
+             * del `android.jar` de API 36, no existe. Todo el soporte de origins
+             * pasa por aqui, que es donde el loader decide si sirve algo o
+             * deja pasar la peticion.
+             *
+             * Sin esto, el bundle queda bloqueado:
+             *
+             *   Access to script at '.../bundle.js' from origin 'null' has been
+             *   blocked by CORS policy
+             *
+             * porque un modulo ES una peticion y con `file:` el origen es nulo.
+             */
+            override fun shouldInterceptRequest(
+                view: WebView,
+                peticion: WebResourceRequest,
+            ): WebResourceResponse? = loader.shouldInterceptRequest(peticion.url)
+
             /**
              * Aqui, y no en `onPageFinished`.
              *
@@ -225,23 +273,7 @@ class WebUI {
         // El path handler mapea `/assets/` → `assets/` del APK, asi que el
         // `assets/` del APK tiene que contener lo que el bundle pide. Por eso el
         // `.wasm` y las miniaturas van en `assets/web/assets/`.
-        //
-        // MEDIDO: `WebViewAssetLoader` está en `androidx.webkit`, NO en el
-        // framework. Comprobado en el `android.jar` de API 36: no hay ninguna
-        // clase `AssetLoader`. De ahí la dependencia.
-        // ------------------------------------------------------------------
-        // MEDIDO: `assetLoader` y `baseUrl` tienen que ser PROPIEDADES de
-        // WebView, no variables locales. Asignarlas aqui no compila:
-        // 'Unresolved reference'. Se declaran junto al `WebView`, mas abajo.
-        assetLoader = WebViewAssetLoader.Builder()
-            .setDomain("appassets.androidplatform.net")
-            .addPathHandler("/assets/", AssetsPathHandler(context))
-            .build()
-
-        baseUrl = "$DOMINIO$PREFIJO"
-        Log.i(TAG, "los assets se sirven por $baseUrl (no file://)")
-
-        loadUrl("${baseUrl}index.html")
+        loadUrl("$DOMINIO$PREFIJO" + "index.html")
     }
 
     /**
@@ -349,6 +381,12 @@ class WebUI {
          * ninguna clase `AssetLoader`. De ahi la dependencia.
          */
         const val DOMINIO = "https://appassets.androidplatform.net"
+
+        /**
+         * Solo el host, sin esquema. `WebViewAssetLoader.setDomain` lo espera
+         * asi; con `https://` delante no funciona.
+         */
+        const val HOST = "appassets.androidplatform.net"
 
         /** Donde vive la UI dentro de los assets. */
         const val PREFIJO = "/assets/web/"
