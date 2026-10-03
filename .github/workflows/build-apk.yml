@@ -293,15 +293,33 @@ jobs:
           test -f "$SO" || { echo "::error::el APK NO lleva el .so dentro"; exit 1; }
           echo "  .so en el APK: $(stat -c%s "$SO") bytes"
 
-          # Y el símbolo JNI tiene que estar, con el nombre EXACTO que espera
-          # Kotlin. Si el paquete de Kotlin y el prefijo del `#[export_name]` en
-          # Rust no coinciden, esto falla aquí en vez de en el móvil.
-          for sym in Java_dev_graphite_mobile_MainActivityKt_nativeBoot \
-                     Java_dev_graphite_mobile_MainActivityKt_nativeSurfaceSize \
-                     Java_dev_graphite_mobile_MainActivityKt_nativeFrame; do
-            grep -qa "$sym" "$SO" || { echo "::error::el APK lleva un .so sin $sym"; exit 1; }
-            echo "  OK  $sym"
+          # Los cinco símbolos JNI, con el nombre EXACTO que espera Kotlin.
+          #
+          # MEDIDO: son cinco, no tres. Añadir una función `native` en Kotlin y
+          # olvidarse de exportarla desde Rust no da ningún error de
+          # compilación: el `external fun` compila siempre. El fallo es un
+          # `UnsatisfiedLinkError` en el móvil, al arrancar, y solo nombra el
+          # símbolo que falta.
+          #
+          # Por eso se comprueban los cinco contra la lista de `external fun` del
+          # código Kotlin, y no contra una lista escrita aquí que se quedaría
+          # corta en la próxima función nueva.
+          MAPEOS=0
+          for sym in $(grep -ho 'external fun native[A-Za-z]*' \
+                         android/app/src/main/kotlin/dev/graphite/mobile/*.kt \
+                       | sed 's/external fun //'); do
+            if grep -qa "Java_dev_graphite_mobile_MainActivityKt_$sym" "$SO"; then
+              echo "  OK  $sym"
+              MAPEOS=$((MAPEOS + 1))
+            else
+              echo "::error::el APK lleva un .so SIN el simbolo $sym"
+              echo "::error::Kotlin declara 'external fun $sym' pero Rust no lo exporta:"
+              echo "::error::  falta #[export_name = \"Java_dev_graphite_mobile_MainActivityKt_$sym\"]"
+              MAPEOS=-1
+            fi
           done
+          test "$MAPEOS" -gt 0 || { echo "::error::faltan simbolos JNI en el .so"; exit 1; }
+          echo "  $MAPEOS/5 simbolos JNI presentes"
 
           # La Activity también, y con la herramienta CORRECTA.
           #

@@ -243,4 +243,7 @@ class WebUI {
 // Funciones nativas. Ver el comentario del final de MainActivity.kt sobre por
 // que esto NO puede ser `private`.
 external fun nativeMessage(base64: String): String?
-external fun nativeInitialized(width: Int, height: Int)
+// Devuelve `String?`: el nativo contesta con lo que el motor mande al frontend.
+// El tipo tiene que COINCIDIR con el `jstring` que devuelve el `#[export_name]`
+// de Rust, y no con un `Unit`.
+external fun nativeInitialized(width: Int, height: Int): String?
