@@ -98,19 +98,16 @@ class WebUI {
                 cargado = true
             }
 
-            // En API 23+ la firma lleva el `request`: sin ese parámetro el
-            // override no casa y el error salta en compilación.
-            // `protected`, no private: en `WebViewClient` estos dos son `protected open`, y
-            // un override que reduce la visibilidad no casa con el original y
-            // falla con "overrides nothing".
+            // En API 23+ la firma lleva `request`. Sin ese parametro el
+            // override no casa y sale "overrides nothing".
             //
-            // MEDIDO: las dos versiones de este error tienen el mismo mensaje,
-            // 'overrides nothing', y ninguna de las dos dice cual es el
-            // problema: una vez era la firma (faltaba `request`), otra vez era
-            // la visibilidad. Kotlin deberia dizerlo.
+            // MEDIDO: se probaron dos cosas que NO eran la causa, y las dos
+            // dan el mismo error: ponerlos `protected` en vez de `private`, y
+            // quitar el `request`. Aqui van `public`, que es como los declara
+            // `WebViewClient`. La visibilidad no era el problema.
             @Deprecated("Deprecated in Java")
             @Suppress("DEPRECATION")
-            protected override fun onReceivedError(
+            override fun onReceivedError(
                 view: WebView?,
                 request: WebResourceRequest?,
                 errorCode: Int,
@@ -122,7 +119,7 @@ class WebUI {
                 Log.e(TAG, "error al cargar: $errorCode $description en $failingUrl")
             }
 
-            protected override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
+            override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
                 // `console.log` del frontend acaba en logcat con el tag del
                 // proceso, no con el nuestro. Envolverlo aquí mete todo bajo
                 // GRAPHITE, que es donde se mira.
