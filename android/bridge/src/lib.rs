@@ -1083,7 +1083,7 @@ impl Engine {
         // Devuelve `HasRun(None)` cuando no hay nada nuevo que renderizar: el
         // motor es demand-driven y eso es lo correcto; ver `last_texture`.
         // ------------------------------------------------------------------
-        let (ran, textura) =
+        let (ran, textura) = {
             let resultado = match pollster::block_on(DesktopWrapper::execute_node_graph()) {
                 NodeGraphExecutionResult::HasRun(t) => (true, t),
                 NodeGraphExecutionResult::NotRun => (false, None),

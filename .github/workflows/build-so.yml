@@ -114,6 +114,32 @@ jobs:
       # Si esto falla, el log dice qué dependencia y qué símbolo: el dato que
       # hace falta, sin teoría.
       # ------------------------------------------------------------------
+      # ------------------------------------------------------------------
+      # LLAVES BALANCEADAS, ANTES DE GASTAR OCHO MINUTOS EN COMPILARLO.
+      #
+      # MEDIDO. Un `{` de menos en `android/bridge/src/lib.rs`:
+      #
+      #     error: unexpected closing delimiter: `}`
+      #       --> android/bridge/src/lib.rs:1339:1
+      #     error: could not compile `graphite-android-bridge` (lib)
+      #
+      # Tardó **ocho minutos** en aparecer, después de compilar medio grafo de
+      # nodos. Es un error que se ve en un segundo mirando el fichero.
+      #
+      # Este check NO sustituye a `rustc`, que además valida tipos: solo mira que
+      # las llaves cuadren y que no quede ninguna cadena sin cerrar. Es la puerta
+      # de entrada más barata posible, y por eso va antes del build: si esto
+      # falla, los ocho minutos siguientes no sirven de nada.
+      #
+      # Un `cargo check` previo sería mejor, pero compila lo mismo que el build y
+      # por tanto cuesta lo mismo. Esto cuesta dos segundos.
+      # ------------------------------------------------------------------
+      - name: Comprobar llaves
+        run: |
+          python3 android/scripts/check-rust-braces.py \
+            android/bridge/src/lib.rs \
+            android/bridge/src/jni_bridge.rs
+
       - name: Build Graphite engine for arm64-v8a
         run: |
           source "$HOME/.cargo/env"
