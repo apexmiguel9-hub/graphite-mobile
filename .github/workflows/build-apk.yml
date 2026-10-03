@@ -231,6 +231,32 @@ jobs:
       # Ahora se espera al run de ESTE commit, hasta 25 minutos. Si no llega, se
       # usa el anterior y se avisa, que es mejor que no tener APK.
       # ------------------------------------------------------------------
+      # ------------------------------------------------------------------
+      # BAJAR LA UI. Igual que el `.so`, el frontend viene de otro workflow:
+      # así tocar Kotlin no paga la compilación de Rust ni la de npm.
+      #
+      # Y AQUÍ ESTA ESPERAR, QUE ES LO QUE FALTABA.
+      #
+      # MEDIDO, dos veces:
+      #
+      #  1. `build-apk` se dispara al terminar `build-so`, y `build-so` termina
+      #     ANTES que `build-frontend` —el motor tarda 10 min, el frontend 12.
+      #     O sea que el APK se construía SIEMPRE con el frontend del commit
+      #     ANTERIOR, y el fallo era un `WebUI.kt` de hace tres commits:
+      #
+      #       ::warning::el frontend es de OTRO commit
+      #       ::warning::  este:    da38426
+      #       ::warning::  el de UI: 029caa5
+      #
+      #  2. Al esperar a ciegas seTllegaron los 25 min sin(run) porque este
+      #     commit solo tocaba `.github/workflows/build-apk.yml`, que NO está en
+      #     los `paths` de `build-frontend`. Ese workflow nunca se launcher
+      #     nunca, y el APK estuvo 25 minutos esperando a algo que no iba a pasar.
+      #
+      # LA REGLA CORRECTA: esperar solo si YA HAY un run en marcha para este
+      # commit. Si no hay ninguno, es que el commit no toca el frontend, y
+      # entonces el último frontend exitoso es exactamente el que toca.
+      # ------------------------------------------------------------------
       - name: Resolve frontend run
         id: fe
         env:
@@ -240,54 +266,56 @@ jobs:
           set -euo pipefail
           REPO="$GITHUB_REPOSITORY"
 
-          buscar_de_este_commit() {
-            gh api "repos/$REPO/actions/workflows/build-frontend.yml/runs?per_page=100&branch=master" \
+          runs_de_este_commit() {
+            # 'pending' | 'in_progress' = hay uno en marcha.
+            # 'completed' = ya se sabe el resultado.
+            # ausente = este commit no toca el frontend.
+            local estados
+            estados=$(gh api "repos/$REPO/actions/workflows/build-frontend.yml/runs?per_page=100&branch=master" \
               | jq -r --arg sha "$SHA" \
-                  '.workflow_runs[]
-                   | select(.conclusion=="success" and .head_sha==$sha)
-                   | .id' | head -1
+                  '.workflow_runs[] | select(.head_sha==$sha)
+                   | "\(.status) \(.conclusion // "-") \(.id)"')
+            echo "$estados"
           }
 
-          RUN_ID=""
           ESPERA=0
           LIMITE=$((25 * 60))
-          while [ -z "$RUN_ID" ] && [ "$ESPERA" -lt "$LIMITE" ]; do
-            RUN_ID=$(buscar_de_este_commit)
-            if [ -n "$RUN_ID" ]; then
-              break
-            fi
+          while :; do
+            ESTADOS=$(runs_de_este_commit)
+            echo "$ESTADOS" | grep -q '^completed success ' \
+              && { RUN_ID=$(echo "$ESTADOS" | awk '/^completed success /{print $3; exit}'); break; }
+            EN_MARCHA=$(echo "$ESTADOS" | grep -cE '^(pending|in_progress) ' || true)
+            [ "$EN_MARCHA" -gt 0 ] || break
             if [ "$ESPERA" -eq 0 ]; then
-              echo "El frontend de este commit ($SHA) aun no ha terminado."
-              echo "Se espera hasta 25 min: build-so termina antes que"
-              echo "build-frontend, asi que sin esto el APK seria de un commit"
-              echo "anterior."
+              echo "Hay $EN_MARCHA run(s) de frontend para este commit; se espera."
+              echo "(build-so termina antes que build-frontend, asi que sin esto"
+              echo " el APK seria de un commit anterior)"
             fi
+            [ "$ESPERA" -lt "$LIMITE" ] || break
             sleep 30
             ESPERA=$((ESPERA + 30))
           done
 
-          if [ -n "$RUN_ID" ]; then
+          if [ -n "${RUN_ID:-}" ]; then
             echo "  frontend del MISMO commit: $RUN_ID (esperados ${ESPERA}s)"
             echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
-            echo "Usando el frontend del run $RUN_ID"
             exit 0
           fi
 
-          echo "::warning::tras ${ESPERA}s no hay frontend exitoso de este commit."
-          echo "::warning::Se usa el mas reciente de master, que es de otro commit."
+          # No hay run de este commit: este commit no toca el frontend, asi que
+          # el último exitoso es el correcto.
+          echo "  este commit no toca el frontend: se usa el último compulado"
           RUN_ID=$(gh api "repos/$REPO/actions/workflows/build-frontend.yml/runs?per_page=100&branch=master" \
-            | jq -r '.workflow_runs[] | select(.conclusion=="success" and .head_branch=="master") | .id' \
-            | head -1)
+            | jq -r '.workflow_runs[]
+               | select(.conclusion=="success" and .head_branch=="master") | .id' | head -1)
           if [ -z "$RUN_ID" ]; then
             echo "::error::no hay ningun build-frontend exitoso en master."
             echo "::error::La UI es obligatoria: sin ella el APK abre una pantalla gris."
             exit 1
           fi
           RUN_SHA=$(gh api "repos/$REPO/actions/runs/$RUN_ID" --jq '.head_sha')
-          echo "::warning::  este:    $SHA"
-          echo "::warning::  el de UI: $RUN_SHA"
+          echo "  frontend usado: $RUN_ID ($RUN_SHA)"
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
-          echo "Usando el frontend del run $RUN_ID (de OTRO commit)"
 
       - name: Download the frontend into assets/web
         env:
