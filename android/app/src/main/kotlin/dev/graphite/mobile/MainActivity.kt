@@ -86,11 +86,8 @@ class MainActivity : Activity() {
             )
         }
 
-        // El WebView arranca cuando el motor ya tiene tamaño: antes de eso no
-        // hay nada que enseñarle y el frontend maquetaría a 0.
-        webView = null
         root.addView(
-            webUI.create(),
+            webUI.create(this),
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
                 FrameLayout.LayoutParams.MATCH_PARENT,

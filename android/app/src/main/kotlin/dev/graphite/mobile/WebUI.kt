@@ -1,11 +1,13 @@
 package dev.graphite.mobile
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.util.Log
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import android.webkit.ConsoleMessage
 
 /**
  * La UI: el frontend de Graphite (Svelte) dentro de un WebView.
@@ -54,7 +56,14 @@ class WebUI {
     /** DiAGNóstico a la consola del WebView, visible en logcat con `chromium`. */
     private var ultimoEstado = ""
 
-    fun create(): WebView = WebView(null).apply {
+    /**
+     * Crea el WebView.
+     *
+     * El `context` es la propia Activity: un WebView sin Activity no tiene
+     * ventana y no carga nada. `WebView(null)` compila pero no funciona, que es
+     * peor que un error.
+     */
+    fun create(context: Context): WebView = WebView(context).apply {
         webView = this
 
         settings.apply {
@@ -89,8 +98,12 @@ class WebUI {
                 cargado = true
             }
 
+            // En API 23+ la firma lleva el `request`: sin ese parámetro el
+            // override no casa y el error salta en compilación.
+            @Suppress("DEPRECATION")
             override fun onReceivedError(
                 view: WebView?,
+                request: WebResourceRequest?,
                 errorCode: Int,
                 description: String?,
                 failingUrl: String?,
@@ -185,9 +198,8 @@ class WebUI {
          */
         @JavascriptInterface
         fun onMessage(base64: String): String? {
-            val (w, h) = surfaceSizeProvider()
             val r = nativeMessage(base64)
-            Log.i(TAG, "mensaje al motor: ${base64.length} b64 -> ${r?.length ?: 0} b64 de vuelta")
+            Log.i(TAG, "js -> nativo: ${base64.length} b64 entrada, ${r?.length ?: 0} b64 salida")
             return r
         }
 
