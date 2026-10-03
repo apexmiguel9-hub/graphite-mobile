@@ -230,8 +230,12 @@ class WebUI {
         // framework. Comprobado en el `android.jar` de API 36: no hay ninguna
         // clase `AssetLoader`. De ahí la dependencia.
         // ------------------------------------------------------------------
+        // MEDIDO: `assetLoader` y `baseUrl` tienen que ser PROPIEDADES de
+        // WebView, no variables locales. Asignarlas aqui no compila:
+        // 'Unresolved reference'. Se declaran junto al `WebView`, mas abajo.
         assetLoader = WebViewAssetLoader.Builder()
-            .addPathHandler("/assets/", AssetsPathHandler(this))
+            .setDomain("appassets.androidplatform.net")
+            .addPathHandler("/assets/", AssetsPathHandler(context))
             .build()
 
         baseUrl = "$DOMINIO$PREFIJO"
@@ -240,6 +244,29 @@ class WebUI {
         loadUrl("${baseUrl}index.html")
     }
 
+    /**
+     * Instala el shim en la página.
+     *
+     * Va EVALUADO, no cargado como fichero: una página `file://` tiene origen
+     * `null` y cualquier petición a otro fichero de disco la bloquea. Con
+     * `WebViewAssetLoader` eso ya no pasa, pero `evaluateJavascript` sigue siendo
+     * lo correcto: no hace peticiones y el shim está disponible antes de que
+     * corra nada.
+     *
+     * MEDIDO: si el marcador `SHIM_PLACEHOLDER` llega intacto, lo que se evalúa
+     * es JavaScript que dice `SHIM_PLACEHOLDER is not defined`. Pasa cuando
+     * `build-frontend` no incrustó el shim. Se comprueba aquí para que el fallo
+     * diga algo útil en vez de un ReferenceError.
+     */
+    private fun inyectarShim(view: WebView) {
+        if (SHIM_JS.contains("SHIM_PLACEHOLDER")) {
+            Log.e(TAG, "BUG: el shim NO fue incrustado; SHIM_JS es el marcador")
+            Log.e(TAG, "build-frontend no se ejecutó, o se usó un WebUI.kt viejo")
+            return
+        }
+        view.evaluateJavascript(SHIM_JS, null)
+        Log.i(TAG, "shim inyectado (embebido, ${SHIM_JS.length} bytes)")
+    }
 
     /**
      * Entrega al frontend un mensaje del nativo, en base64.
