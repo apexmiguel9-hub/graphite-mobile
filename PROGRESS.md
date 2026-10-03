@@ -416,7 +416,7 @@ descarta, y es lo siguiente.
 Los 24 `msj_descartados` se cuentan por tipo ahora (`nombre_de` en `lib.rs`):
 «cuántos» no decía nada, había que ver «cuáles».
 
-### 5.5 Se crea la layer pero no se ve nada: el blit no sabía dónde estaba el lienzo
+### 5.6 Se crea la layer pero no se ve nada: el blit no sabía dónde estaba el lienzo
 
 El bug más caro del port, y el que más se resistió a dejar una pista.
 
@@ -489,7 +489,7 @@ este mismo shader arregló una vez. No se puede volver a traer.
 **Y el offset tiene que recalcularse en cada giro**, no solo cuando llega el
 mensaje: la colocación depende del tamaño de la superficie, que cambia al girar.
 
-### 5.6 El notch: `displayCutout()` no es `systemBars()`
+### 5.7 El notch: `displayCutout()` no es `systemBars()`
 
 MEDIDO, con una foto del móvil: el **Path Tool** y los círculos de color quedan
 debajo de la cámara.
@@ -521,7 +521,7 @@ esto era una suposición.
 
 ---
 
-### 5.7 Compilar Rust en local: sí se puede, con el compilador de Debian
+### 5.9 Compilar Rust en local: sí se puede, con el compilador de Debian
 
 Costó, pero compilar en local convierte un ciclo de 12 minutos en segundos. Y
 todo el camino fue culpa de usar el compilador equivocado para el sistema

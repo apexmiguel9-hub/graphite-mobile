@@ -162,6 +162,13 @@ pub struct Engine {
     /// Buffer con `offset` y `scale` para el blit. Ver `blit.wgsl`.
     pub colocacion: wgpu::Buffer,
 
+    /// Cuantas veces el grafo de nodos ha dicho `NotRun`: no produjo textura.
+    /// Es el estado silencioso por excelencia, asi que necesita contador.
+    pub grafo_sin_correr: u32,
+
+    /// Ultimo tamaño de la textura que devolvio el grafo, para detectar cambios.
+    pub ultimo_tamano_textura: (u32, u32),
+
     /// Escenas de Vello de overlays que han llegado y NO se rasterizan todavía.
     /// Solo el log: sirve para distinguir "el frontend no manda escenas" de
     /// "llegan y no se pintan". Ver `on_native_message`.
@@ -289,6 +296,8 @@ impl Engine {
             messages_in: 0,
             messages_descartados: 0,
             escenas_overlays: 0,
+            grafo_sin_correr: 0,
+            ultimo_tamano_textura: (0, 0),
             lienzo: None,
             descartados_por_tipo: std::collections::HashMap::new(),
             frontend_conectado: false,
@@ -1075,10 +1084,63 @@ impl Engine {
         // motor es demand-driven y eso es lo correcto; ver `last_texture`.
         // ------------------------------------------------------------------
         let (ran, textura) =
-            match pollster::block_on(DesktopWrapper::execute_node_graph()) {
+            let resultado = match pollster::block_on(DesktopWrapper::execute_node_graph()) {
                 NodeGraphExecutionResult::HasRun(t) => (true, t),
                 NodeGraphExecutionResult::NotRun => (false, None),
             };
+            // ------------------------------------------------------------------
+            // QUÉ DEVUELVE EL GRAFO, Y SI CAMBIA.
+            //
+            // MEDIDO, y esto es lo que hay que mirar porque el sintoma es "no se
+            // ve nada de lo que dibujo" sin ningun error en ninguna parte.
+            //
+            // Tres preguntas, y tres numeros que las contestan:
+            //
+            //  1. ¿De que tamaño es la textura? Si no es del tamaño del lienzo,
+            //     el motor esta evaluando otra cosa (un artboard, un nodo) y lo
+            //     nosso lo estira a donde no es.
+            //  2. ¿Cambia el contenido? Se compara el tamaño, que es gratis, y se
+            //     avisa cuando cambia. Un tamaño que no cambia no dice nada de
+            //     contenido, asi que tambien se mira el puntero de la textura:
+            //     si el grafo reevalua y devuelve una textura nueva, el puntero
+            //     cambia aunque el tamano sea el mismo.
+            //  3. ¿El motor cree que el lienzo es este? `ViewportState` ya tiene
+            //     la transformada; lo que llega por `UpdateViewportPhysicalBounds`
+            //     es la salida. Si los dos no coinciden, se nota aqui.
+            //
+            // `NotRun` se registra con nombre propio porque es el estado
+            // silencioso por excelencia: no es un error, el grafo simplemente no
+            // produce nada, y sin este log es indistinguible de "no ha pintado".
+            let (corrio, t) = resultado;
+            if !corrio {
+                self.grafo_sin_correr += 1;
+                if self.frames <= 3 || self.frames % 60 == 0 {
+                    log::warn!(
+                        "[{}] el grafo NO ha corrido (NotRun). {} veces. Sin textura nueva.",
+                        TAG,
+                        self.grafo_sin_correr
+                    );
+                }
+            }
+            if let Some(t) = &t {
+                let (w, h) = (t.width(), t.height());
+                let nuevo_tamano = (w, h) != self.ultimo_tamano_textura;
+                let texto = format!(
+                    "[{}] grafo: textura {}x{}  lienzo {:?}  superficie {:?}  cambia={}",
+                    TAG,
+                    w,
+                    h,
+                    self.lienzo.map(|l| (l.x as i64, l.y as i64, l.width as i64, l.height as i64)),
+                    self.configured,
+                    if nuevo_tamano { "TAMANO" } else { "no" }
+                );
+                if nuevo_tamano || self.frames <= 3 || self.frames % 300 == 0 {
+                    log::info!("{}", texto);
+                }
+                self.ultimo_tamano_textura = (w, h);
+            }
+            (corrio, t)
+        };
         if let Some(t) = textura {
             self.last_texture = Some(t);
         }
@@ -1259,7 +1321,8 @@ impl Engine {
     pub fn status(&self) -> String {
         format!(
             "frames={} lienzo={} swapchain_configurado={:?} resizes={} \
-             frontend={} msj_in={} msj_descartados={} overlays={}",
+             frontend={} msj_in={} msj_descartados={} overlays={} \
+             tex={:?} notrun={} lienzo_css={:?}",
             self.frames,
             self.rendered,
             self.configured,
@@ -1268,6 +1331,9 @@ impl Engine {
             self.messages_in,
             self.messages_descartados,
             self.escenas_overlays,
+            self.ultimo_tamano_textura,
+            self.grafo_sin_correr,
+            self.lienzo.map(|l| (l.x as i64, l.y as i64, l.width as i64, l.height as i64)),
         )
     }
 }

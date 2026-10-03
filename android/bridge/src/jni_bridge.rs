@@ -412,6 +412,49 @@ fn init_logger() {
             .with_max_level(log::LevelFilter::Info)
             .with_tag(TAG),
     );
+
+    // ------------------------------------------------------------------
+    // `tracing` -> `log` -> logcat. ESTO NO ESTABA, Y ES GRANDE.
+    //
+    // MEDIDO: `grep -rn 'tracing_subscriber' android/bridge/src/` no devuelve
+    // NADA. Upstream usa `tracing::` por todas partes —`tracing::error!`,
+    // `tracing::warn!`— y sin un subscriber registrado cada uno de esos eventos
+    // se descarta en silencio. Entre otros:
+    //
+    //   desktop/src/render/state.rs:238  tracing::error!("Error rendering overlays: {:?}")
+    //
+    // O sea: los diagnosticos del motor no existen para nosotros. Si el motor
+    // esta fallando al rasterizar y avisando, no hay forma de verlo, y el unico
+    // sintoma es que en la pantalla no aparece nada.
+    //
+    // Que es exactamente lo que pasa. MEDIDO en el movil, y con una prueba que
+    // no se me habia ocurrido: al tocar con la herramienta de seleccion donde NO
+    // hay nada, el color de relleno se pone blanco, y al tocar donde se supone
+    // que hay el rectangulo se pone ROJO. O sea que el hit-test encuentra el
+    // rectangulo exactamente donde se dibujo, y el hit-test usa la misma
+    // transformada que el render. La geometria esta bien y el fallo es de
+    // render, "sin ningun error en el log que lo diga" — porque los errores del
+    // motor se estaban tirando a la basura antes de existir.
+    //
+    // `LogTracer` convierte los eventos de `tracing` en registros de `log`, que
+    // es lo que `android_logger` ya sabe escribir. Asi todo sale con NUESTRO tag
+    // y con el filtro de nivel de siempre, en vez de tener dos sistemas de log
+    // paralelos.
+    //
+    // `try_init` y no `init`: `native_boot` se llama en cada `surfaceCreated`, y
+    // un segundo `init` reventado seria un panic en el hilo principal. Con
+    // `surfaceCreated`又名 siendo llamado en cada reanudar, eso no es teorico.
+    //
+    let _ = tracing_log::LogTracer::init(log::LevelFilter::Info);
+    // `warn!` del motor con prefijo, y `info!` de Graphite tambien salen. Sin
+    // esto, un `tracing::info!` de la biblioteca se pierde igual que un error.
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,graphite=info")),
+        )
+        .with_writer(std::io::stderr)
+        .try_init();
     // En Android los panics de Rust **NO** llegan a logcat: van a stderr, y stderr
     // está cerrado. Sin este hook, un panic aborta sin dejar ni una línea. Pasó
     // dos veces en el spike anterior y costó dos builds enteros.
