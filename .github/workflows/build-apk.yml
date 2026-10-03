@@ -243,14 +243,38 @@ jobs:
           # La UI no aparece y no hay ningun error de compilacion. Se comprueba
           # el artefacto FINAL, que es lo que va a instalar el movil.
           # ------------------------------------------------------------------
+          # ------------------------------------------------------------------
+          # EL SHIM INCRUSTADO.
+          #
+          # MEDIDO: el `WebUI.kt` del checkout SIEMPRE tiene el marcador
+          # `SHIM_PLACEHOLDER`, porque el marcador se sustituye en la copia de
+          # trabajo de `build-frontend` y esa copia no se empuja. Este workflow
+          # comprueba el `.kt` equivocado y falla siempre.
+          #
+          # El shim incrustado viaja en el artefacto del frontend, como un `.kt`
+          # aparte. Este workflow lo COPIA encima del `WebUI.kt` del repo antes de
+          # compilar, y despues comprueba que el resultado lo tiene.
+          # ------------------------------------------------------------------
           DELIM=$(python3 -c "print(chr(34) * 3 + 'SHIM_PLACEHOLDER' + chr(34) * 3)")
-          grep -qF "$DELIM" "$DEST/bridge.js" 2>/dev/null && true
           KT=android/app/src/main/kotlin/dev/graphite/mobile/WebUI.kt
-          if grep -qF "$DELIM" "$KT"; then
-            echo "::error::WebUI.kt tiene el marcador sin sustituir: el shim NO va dentro"
-            echo "::error::El APK compilaria y no tendria shim. Corre build-frontend primero."
+          EMB="$DEST/WebUI.kt"
+          test -f "$EMB" || { echo "::error::el artefacto no trae WebUI.kt con el shim"; exit 1; }
+
+          if grep -qF "$DELIM" "$EMB"; then
+            echo "::error::el WebUI.kt del artefacto tiene el marcador sin sustituir"
             exit 1
           fi
+          for g in 'window.sendNativeMessage' 'window.initializeNativeCommunication'; do
+            grep -q "$g" "$EMB" \
+              || { echo "::error::el shim incrustado no define $g"; exit 1; }
+          done
+          # Y se USA ese, no el del repo.
+          cp "$EMB" "$KT"
+          if grep -qF "$DELIM" "$KT"; then
+            echo "::error::tras copiar, el marcador sigue en $KT"
+            exit 1
+          fi
+          echo "  OK  el shim incrustado copiado a WebUI.kt (3 globals presentes)"
           for g in 'window.sendNativeMessage' 'window.initializeNativeCommunication'; do
             grep -q "$g" "$KT" \
               || { echo "::error::el shim incrustado no define $g"; exit 1; }
