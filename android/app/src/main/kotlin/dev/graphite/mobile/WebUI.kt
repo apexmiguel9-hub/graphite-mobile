@@ -273,46 +273,27 @@ class WebUI {
          * El shim, embebido en el binario y no cargado como fichero.
          *
          * MEDIDO: cargarlo con `document.createElement('script')` y un `src` a
-         * `file://` falla con CORS. Una pagina `file://` tiene origen `null`, y
-         * cualquier peticion a otro fichero de disco es cross-origin contra
-         * origen nulo, que el navegador bloquea:
+         * `file://` falla con CORS, porque una pagina `file://` tiene origen
+         * `null` y cualquier peticion a otro fichero de disco es cross-origin
+         * contra origen nulo:
          *
          *   Access to script at 'file:///android_asset/web/bridge.js' from
          *   origin 'null' has been blocked by CORS policy
          *
-         * `evaluateJavascript` no hace ninguna peticion: el codigo va dentro del
-         * propio JavaScript evaluado. Por eso el shim va aqui y no en
-         * `assets/`.
+         * `evaluateJavascript` no hace ninguna peticion: el codigo viaja dentro
+         * del propio JavaScript evaluado.
          *
-         * ESTE FICHERO SE GENERA AL COMPILAR. La fuente es
-         * `android/app/src/main/assets/web/bridge.js`, y el workflow
-         * `build-frontend` incrusta su contenido aqui sustituyendo el marcador
-         * `SHIM_PLACEHOLDER`. El `.js` se versiona aparte para poder editarlo y
-         * revisarlo como JavaScript, que es mas comodo que dentro de una cadena
-         * de Kotlin; y el marcador evita que haya dos copias que diverjan.
+         * EL CONTENIDO SE GENERA AL EMPAQUETAR. La fuente es
+         * `android/app/src/main/assets/web/bridge.js` y
+         * `android/scripts/embed-shim.py` lo incrusta aqui sustituyendo el
+         * marcador. El `.js` se versiona aparte para poder editar 130 lineas de
+         * JavaScript sin pelearse con el delimitador de un raw string de Kotlin.
+         *
+         * Este `companion object` es UNO solo. Habia dos: el segundo perdi
+         * `SHIM_PLACEHOLDER` al borrar el primero por error, y el compilador
+         * avisaba con "Conflicting declarations" sin decir de que.
          */
         private val SHIM_JS: String = """SHIM_PLACEHOLDER"""
-    }
-
-    companion object {
-        const val TAG = "GRAPHITE"
-
-        /**
-         * El shim, embebido en el binario.
-         *
-         * Va como constante en vez de leerse de `assets/web/bridge.js` porque
-         * así no puede desincronizarse con el APK: si el fichero falta o está
-         * corrupto, el APK ni siquiera compila.
-         */
-        private const val SHIM_JS = """
-            (function(){
-              var s=document.createElement('script');
-              s.src='file:///android_asset/web/bridge.js';
-              s.onload=function(){console.log('[graphite] shim ejecutado')};
-              s.onerror=function(){console.error('[graphite] NO SE PUDO CARGAR bridge.js')};
-              document.head.appendChild(s);
-            })();
-        """
     }
 }
 
