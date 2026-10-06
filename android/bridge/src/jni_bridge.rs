@@ -206,7 +206,7 @@ pub extern "system" fn native_debug_jni<'local>(
     _class: JClass<'local>,
     modo: jint,
 ) {
-    let modo = modo.clamp(0, 5) as u32;
+    let modo = modo.clamp(0, 7) as u32;
     crate::MODO_VISUALIZACION.store(modo, std::sync::atomic::Ordering::Relaxed);
     log::info!("[{}] modo de visualizacion del blit = {}", TAG, modo);
     // Se devuelve en el informe del proximo `frame`, para que se vea en el log

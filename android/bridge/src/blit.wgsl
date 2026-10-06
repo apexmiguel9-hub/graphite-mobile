@@ -128,13 +128,33 @@ fn fs_main(in: VsOut) -> @location(0) vec4f {
     // pantalla y "tapaba" la zona de arriba. Ahora que la textura se coloca
     // donde toca, el margen es visible —y sería negro, que es justo el triángulo
     // negro que este shader arregló una vez. No se puede volver a traer.
+    // Modo de visualizacion: lo que se ve aqui es DIAGNOSTICO, no la interfaz.
+    let modo = i32(colocacion.modo + 0.5);
+    // Modo 6: MAGENTA SOLIDO, sin mirar la textura ni el rectangulo del lienzo.
+    //
+    // Es el test mas simple que existe y el que hacia falta: si esto no sale en
+    // pantalla, el pass de blit NO se esta viendo, y da igual todo lo demas —ni
+    // el uniform, ni la transformada, ni el contenido de la textura. Si sale,
+    // el pass se ve y el problema es de colocacion o de contenido.
+    //
+    // MEDIDO que hacia falta: los modos 1, 3 y 5 no cambiaban NADA en pantalla
+    // (dos capturas con el mismo tamano exacto de fichero, byte a byte), con un
+    // documento abierto y el lienzo al aire. Y el DOM se midio entero: en el
+    // area del lienzo no hay ni un elemento con fondo, ni `svg.artboards`, ni
+    // `canvas.overlays`. O sea que lo que se ve ES la superficie.
+    if (modo == 6) {
+        return vec4f(1.0, 0.0, 1.0, 1.0);
+    }
+    // Modo 7: la textura tal cual, sin la transformada del lienzo. Muestreada
+    // 1:1 con la pantalla, para ver si tiene contenido y como es.
+    if (modo == 7) {
+        return textureSample(src, samp, in.uv);
+    }
     let coorde = (in.uv - colocacion.offset) * colocacion.scale;
     if (coorde.x < 0.0 || coorde.x > 1.0 || coorde.y < 0.0 || coorde.y > 1.0) {
         return fondo;
     }
 
-    // Modo de visualizacion: lo que se ve aqui es DIAGNOSTICO, no la interfaz.
-    let modo = i32(colocacion.modo + 0.5);
     if (modo == 1) {
         return vec4f(coorde.x, coorde.y, 0.0, 1.0);
     }
