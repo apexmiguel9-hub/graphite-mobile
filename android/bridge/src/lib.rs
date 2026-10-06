@@ -840,6 +840,27 @@ impl Engine {
         // No existe `impl From<wgpu_sync::Adapter> for wgpu::Adapter` — se comprobó.
         let raw_adapter: wgpu::Adapter = (*sync_adapter).clone();
 
+        // MEDIDO que hacía falta: vello rasteriza con COMPUTE, y si esta GPU no
+        // lo da, vello devuelve `Ok` con la textura vacía y no dice nada. Sin
+        // este log la causa queda escondida detrás de un render que "funciona".
+        let caps = raw_adapter.get_downlevel_capabilities();
+        let limits = raw_adapter.limits();
+        log::info!(
+            "[{}] capabilities: compute={} fragment_storage={} msaa={} blend_indep={} \
+             | max_compute_wg_x={} max_compute_invocations={} max_storage_buffer={} \
+             max_texture_2d={} max_storage_per_stage={}",
+            TAG,
+            caps.flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS),
+            caps.flags.contains(wgpu::DownlevelFlags::FRAGMENT_STORAGE),
+            caps.flags.contains(wgpu::DownlevelFlags::MULTISAMPLED_SHADING),
+            caps.flags.contains(wgpu::DownlevelFlags::INDEPENDENT_BLEND),
+            limits.max_compute_workgroup_size_x,
+            limits.max_compute_invocations_per_workgroup,
+            limits.max_storage_buffer_binding_size,
+            limits.max_texture_dimension_2d,
+            limits.max_storage_buffers_per_shader_stage,
+        );
+
         Ok((
             WgpuContext {
                 device,

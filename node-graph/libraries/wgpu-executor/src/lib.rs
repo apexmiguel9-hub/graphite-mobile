@@ -26,6 +26,7 @@ pub use pipeline::Pipeline as WgpuPipeline;
 pub use pipeline::PipelineCache as WgpuPipelineCache;
 pub use raster_types::Texture;
 pub use rendering::RenderContext;
+use std::sync::atomic::{AtomicU64, Ordering};
 pub use wgpu::Backends as WgpuBackends;
 pub use wgpu::Features as WgpuFeatures;
 pub use wgpu_sync::CurrentSurfaceTexture as WgpuCurrentSurfaceTexture;
@@ -71,6 +72,46 @@ impl<'a, T: ApplicationIo<Executor = WgpuExecutor>> From<&'a EditorApi<T>> for &
 
 impl WgpuExecutor {
 	pub async fn render_vello_scene(&self, scene: &Scene, size: UVec2, context: &RenderContext, background: Option<Color>) -> Result<Texture> {
+		// ------------------------------------------------------------------
+		// DIAGNÓSTICO TEMPORAL. Ver PROGRESS.md.
+		//
+		// MEDIDO: de todo lo que dibuja el motor, lo único que llega a la
+		// pantalla es lo que NO pasa por vello —el fondo, que se dibuja con
+		// shaders WGSL propios en `render_background.rs`—. Ni las formas ni las
+		// imágenes rasterizan, y no hay ni un error ni un pánico, o sea que
+		// vello devuelve `Ok` con una textura completamente transparente.
+		//
+		// Quedan dos causas, y este ping las separa de un vistazo:
+		//
+		//   - Si el RECTÁNGULO ROJO se ve  -> vello rasteriza bien en esta GPU,
+		//     y entonces la escena del documento llega vacía.
+		//   - Si NO se ve                  -> vello no rasteriza en esta GPU, y da
+		//     igual lo que traiga la escena.
+		//
+		// El ping es un rectángulo rojo en la cuarta superior izquierda de la
+		// textura, así que se ve a simple vista al abrir la app, sin tocar nada.
+		// ------------------------------------------------------------------
+		static N_RENDER: AtomicU64 = AtomicU64::new(0);
+		let n = N_RENDER.fetch_add(1, Ordering::Relaxed);
+		let sin_formas = scene.encoding().is_empty();
+		if n < 4 || n % 500 == 0 {
+			eprintln!("[diagnostico] render_vello_scene #{n}: {size:?} escena_sin_formas={sin_formas}");
+		}
+
+		let mut ping = Scene::new();
+		let t = vello::kurbo::Affine::scale(size.x as f64 * 0.25);
+		ping.fill(
+			vello::peniko::Fill::NonZero,
+			t,
+			vello::peniko::Color::from_rgba8(255, 0, 0, 255),
+			None,
+			&vello::kurbo::Rect::new(0.0, 0.0, 1.0, 1.0),
+		);
+		let mut escena = Scene::new();
+		escena.append(&ping, Some(vello::kurbo::Affine::IDENTITY));
+		escena.append(scene, Some(vello::kurbo::Affine::IDENTITY));
+		let scene = &escena;
+
 		let texture = self.request_texture(size);
 
 		let texture_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
