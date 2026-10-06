@@ -25,6 +25,11 @@ node-macro = { workspace = true }
 # Workspace dependencies
 glam = { workspace = true }
 anyhow = { workspace = true }
+# MEDIDO que hace falta: sin esto, el log de diagnostico de `render_vello_scene`
+# no tiene por donde salir. `eprintln!` en Android no va a logcat si el proceso
+# no tiene stdout asociado, y no salio ni una vez de mas de diez mil llamadas —
+# o sea, un "verde" que no significaba nada.
+tracing = { workspace = true }
 wgpu = { workspace = true }
 wgpu-sync = { workspace = true }
 futures = { workspace = true }

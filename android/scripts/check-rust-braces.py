@@ -89,8 +89,24 @@ def revisar(ruta: str) -> int:
                 escapar = False
                 i += 1
                 continue
-            # Lifetime: 'a. Es un `'` seguido de letra, no un char.
-            if c == "'" and siguiente.isalpha():
+            # Lifetime: 'a o '_. Es un `'` seguido de letra o de guion bajo, y
+            # NO un char.
+            #
+            # MEDIDO que hizo falta este caso: `Formatter<'_>` —el lifetime
+            # anonimo—. Antes el codigo solo aceptaba `'` + letra, porque en
+            # Python `"_".isalpha()` es False. Asi que `'_` abria un char literal
+            # fantasma, el lexer se quedaba dentro hasta el siguiente `'` del
+            # fichero, y de ahi salia un "falta un `}`" que no existia:
+            # `rustc` compilaba el fichero sin problema y el check lo marcaba
+            # roto.
+            #
+            # La diferencia entre el lifetime `'_` y el char `'_'` es lo que
+            # viene despues: en el char hay otra comilla, en el lifetime no.
+            if c == "'" and (siguiente.isalpha() or siguiente == "_"):
+                if siguiente == "_" and src[i + 2 : i + 3] == "'":
+                    modo = "char"
+                    i += 1
+                    continue
                 i += 2
                 continue
             if c == "'":

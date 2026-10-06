@@ -73,44 +73,34 @@ impl<'a, T: ApplicationIo<Executor = WgpuExecutor>> From<&'a EditorApi<T>> for &
 impl WgpuExecutor {
 	pub async fn render_vello_scene(&self, scene: &Scene, size: UVec2, context: &RenderContext, background: Option<Color>) -> Result<Texture> {
 		// ------------------------------------------------------------------
-		// DIAGNÓSTICO TEMPORAL. Ver PROGRESS.md.
+		// DIAGNÓSTICO. Ver PROGRESS.md.
 		//
-		// MEDIDO: de todo lo que dibuja el motor, lo único que llega a la
-		// pantalla es lo que NO pasa por vello —el fondo, que se dibuja con
+		// Lo que estaba en juego: de todo lo que dibuja el motor, lo único que
+		// llegaba a la pantalla era lo que NO pasa por vello —el fondo, que usa
 		// shaders WGSL propios en `render_background.rs`—. Ni las formas ni las
-		// imágenes rasterizan, y no hay ni un error ni un pánico, o sea que
-		// vello devuelve `Ok` con una textura completamente transparente.
+		// imágenes salían, y sin errores ni pánicos: vello devolvía `Ok` con una
+		// textura completamente transparente.
 		//
-		// Quedan dos causas, y este ping las separa de un vistazo:
+		// HABÍAN DOS CAUSAS, y se separaron con un ping: un rectángulo rojo
+		// añadido a la textura antes de rasterizar. **MEDIDO: se ve.** O sea que
+		// vello rasteriza bien en este PowerVR BXM-8-256 y la hipótesis de que su
+		// compute no funciona aquí queda DESCARTADA. El ping ya hizo su trabajo y
+		// se quita.
 		//
-		//   - Si el RECTÁNGULO ROJO se ve  -> vello rasteriza bien en esta GPU,
-		//     y entonces la escena del documento llega vacía.
-		//   - Si NO se ve                  -> vello no rasteriza en esta GPU, y da
-		//     igual lo que traiga la escena.
-		//
-		// El ping es un rectángulo rojo en la cuarta superior izquierda de la
-		// textura, así que se ve a simple vista al abrir la app, sin tocar nada.
-		// ------------------------------------------------------------------
+		// Y queda el aviso que cuesta dinero: **la ausencia de este log nunca fue
+		// evidencia de nada.** Se puso con `eprintln!` y no salió ni una vez de
+		// más de diez mil llamadas, porque en Android `eprintln!` no va a logcat
+		// si el proceso no tiene stdout asociado. `tracing::info!` sí pasa por el
+		// `LogTracer`. Instrumentación que no funciona es peor que no tenerla:
+		// da un verde que no significa nada.
 		static N_RENDER: AtomicU64 = AtomicU64::new(0);
 		let n = N_RENDER.fetch_add(1, Ordering::Relaxed);
+		// `Encoding::is_empty()` mira `path_tags`: si es `true`, la escena no
+		// tiene NINGUNA forma, y con ella el documento entero no se dibuja.
 		let sin_formas = scene.encoding().is_empty();
 		if n < 4 || n % 500 == 0 {
-			eprintln!("[diagnostico] render_vello_scene #{n}: {size:?} escena_sin_formas={sin_formas}");
+			tracing::info!("[diagnostico] render_vello_scene #{n}: {size:?} escena_sin_formas={sin_formas}");
 		}
-
-		let mut ping = Scene::new();
-		let t = vello::kurbo::Affine::scale(size.x as f64 * 0.25);
-		ping.fill(
-			vello::peniko::Fill::NonZero,
-			t,
-			vello::peniko::Color::from_rgba8(255, 0, 0, 255),
-			None,
-			&vello::kurbo::Rect::new(0.0, 0.0, 1.0, 1.0),
-		);
-		let mut escena = Scene::new();
-		escena.append(&ping, Some(vello::kurbo::Affine::IDENTITY));
-		escena.append(scene, Some(vello::kurbo::Affine::IDENTITY));
-		let scene = &escena;
 
 		let texture = self.request_texture(size);
 

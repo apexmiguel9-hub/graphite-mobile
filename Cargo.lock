@@ -7112,6 +7112,7 @@ dependencies = [
  "node-macro",
  "raster-types",
  "rendering",
+ "tracing",
  "vello",
  "web-sys",
  "wgpu",
