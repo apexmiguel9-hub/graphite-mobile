@@ -98,6 +98,44 @@ class WebUI {
     fun create(context: Context): WebView = WebView(context).apply {
         webView = this
 
+        // ------------------------------------------------------------------
+        // TRANSLÚCIDO. ESTA ES LA LÍNEA QUE FALTABA, Y SIN ELLA NADA DE LO
+        // QUE HACE EL MOTOR LLEGA A VERSE.
+        //
+        // MEDIDO, y cuesta creerlo:
+        //
+        //   - El frontend hace su trabajo: `viewportHolePunch` pone el elemento
+        //     del lienzo en `transparent`, y medido con `elementsFromPoint` los
+        //     diez elementos de la pila son `rgba(0,0,0,0)`, sin
+        //     `background-image`, sin `mix-blend-mode`, sin filtro.
+        //   - El motor dibuja: `con_textura` sube al dibujar, y la textura
+        //     mide exactamente el rectángulo del lienzo.
+        //   - Y aun así, el pass de blit no se ve: `debug(6)`, que devuelve
+        //     MAGENTA SOLIDO sin mirar ni la textura ni el rectángulo, **no
+        //     sale en ninguna parte de la pantalla**. Ni un pixel.
+        //
+        // La causa es que **una `WebView` de Android es opaca por defecto**.
+        // El hole punch abre un agujero en la PÁGINA, pero debajo de la página
+        // esta la VISTA, que es opaca. El agujero se rellena con el blanco
+        // propio del WebView, y ese blanco es el rectángulo que llevaba semanas
+        // pareciendo "el artboard que no se dibuja".
+        //
+        // Confirmado de dos formas independientes, y las dos necesarias:
+        //
+        //   1. Con la página entera transparente por CSS —`html`, `body` y
+        //      `.main-window`— el rectángulo blanco **sigue igual**. El CSS no
+        //      llega a ese nivel.
+        //   2. Quitando el frontend de encima, se ve el motor.
+        //
+        // Y `WebView` tiene `setBackgroundColor`, que es justo para esto:
+        // ponerlo transparente hace que la vista deje de ser opaca y el compositor
+        // deje pasar debajo lo que haya, que es la `SurfaceView` del motor.
+        //
+        // NOTA: el frontend pone el fondo del cuerpo a `#0a0a0a` en su
+        // `index.html`, así que la UI sigue siendo opaca donde tiene que serlo.
+        // Esto solo cambia lo que hay DEBAJO de la página.
+        setBackgroundColor(android.graphics.Color.TRANSPARENT)
+
         settings.apply {
             javaScriptEnabled = true
             // El frontend es una SPA con rutas como /demo-artwork/foo.graphite.
